@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --bin czkawka_gui
+	cargo build --release --bin czkawka_cli
+
+override_dh_shlibdeps:
+	dh_shlibdeps --exclude $(CURDIR)/debian/czkawka/usr/bin/czkawka-gui
+
+override_dh_auto_install:
+	mkdir -p $(CURDIR)/debian/czkawka/usr/bin
+	cp $(CURDIR)/target/release/czkawka_cli $(CURDIR)/debian/czkawka/usr/bin/czkawka
+	cp $(CURDIR)/target/release/czkawka_gui $(CURDIR)/debian/czkawka/usr/bin/czkawka-gui

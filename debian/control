@@ -1,0 +1,18 @@
+Source: czkawka
+Section: utils
+Priority: optional
+Maintainer: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
+Build-Depends: debhelper-compat (= 13),
+	       rust-all,
+	       libgtk-3-dev,
+	       libasound2-dev,
+Standards-Version: 4.6.0
+Homepage: https://qarmin.github.io/czkawka/
+Vcs-Browser: https://gitlab.com/kaisenlinux/packages/czkawka
+Vcs-Git: https://gitlab.com/kaisenlinux/packages/czkawka.git
+
+Package: czkawka
+Architecture: any
+Depends: ${shlibs:Depends},
+	 ${misc:Depends},
+Description: Multi functional app to find duplicates, empty folders, similar images etc
