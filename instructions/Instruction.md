@@ -7,41 +7,25 @@
 - [Tools](#tools)
 
 Czkawka for now contains two independent frontends - the terminal and graphical interface which share the core module.
-Using Rust language without unsafe code helps to create safe, fast, and low resources requirements app.
-This code also has good support for multi-threading.
 
 ## GUI GTK
-<img src="https://user-images.githubusercontent.com/41945903/103002387-14d1b800-452f-11eb-967e-9d5905dd6db5.png" width="800" />
+<img src="https://user-images.githubusercontent.com/41945903/148281103-13c00d08-7881-43e8-b6e3-5178473bce85.png" width="800" />
 
 ### GUI overview
 The GUI is built from different pieces:
-- Red - Program settings, contains info about included/excluded directories which user may want to check. Also, there is a tab with allowed extensions, which allows users to choose which type of files they want to check. Next category is Excluded items, which allows to discard specific path by using `*` wildcard - so `/home/ra*` means that e.g. `/home/rafal/` will be ignored but not `/home/czkawka/`. The last one is settings tab which allows to save configuration of the program, reset and load it when needed.
-- Green - This allows to choose which tool we want to use.
-- Blue - Here are settings for the current tool, which we want/need to configure
-- Pink - Window in which results of searching are printed
-- Yellow - Box with buttons like `Search`(starts searching with the currently selected tool), `Hide Text View`(hides text box at the bottom with white overlay), `Symlink`(creates symlink to selected file), `Select`(shows options to select specific rows), `Delete`(deletes selected files), `Save`(save to file the search result) - some buttons are only visible when at least one result is visible.
-- Brown - Small informative field to show informations e.g. about number of found duplicate files
-- White - Text window to show possible errors/warnings e.g. when failed to delete folder due no permissions etc.
+- 1 - Image preview - it is used in duplicate files and similar images finder. Cannot be resized, but can be disabled.
+- 2 - Main Notebook to change used tool.
+- 3 - Main results window - allows to choose, delete, configure results.
+- 4 - Bottom image panels - contains buttons which do specific actions on data(like selecting them) or e.g. hide/show parts of GUI
+- 5 - Text panel - prints messages/warnings/errors about executed actions. User can hide it.
+- 6 - Panel with selecting specific directories to use or exclude. Also here are specified allowed extensions and file sizes.
+- 7 - Buttons which opens About Window(shows info about app) and Settings in which scan can be customized
 
-There is also an option to see image previews in Similar Images tool.
+<img src="https://user-images.githubusercontent.com/41945903/148279809-54ea8684-8bff-436b-af67-ff9859f468f2.png" width="800" />
 
-<img src="https://user-images.githubusercontent.com/41945903/103025544-50ca4480-4552-11eb-9a54-f1b1f6f725b1.png" width="800" />
-
-### Action Buttons
-There are several buttons which do different actions:
-- Search - starts searching and shows progress dialog
-- Stop - button in progress dialog, allows to easily stop current task. Sometimes it may take a few seconds until all atomic operations end and GUI will  become responsive again
-- Select - allows selecting multiple entries at once
-- Delete - deletes entirely all selected entries
-- Symlink - creates symlink to selected files(first file is threaten as original and rest will become symlinks)
-- Save - save initial state of results
-- Hamburger(parallel lines) - used to show/hide bottom text panel which shows warnings/errors
-- Add (directories) - adds directories to include or exclude
-- Remove (directories) - removes directories to search or to exclude
-- Manual Add (directories) - allows to input by typing directories (may be used to enter non visible in file manager directories)
-- Save current configuration - saves current GUI configuration to configuration file
-- Load configuration - loads configuration of file and overrides current GUI config
-- Reset configuration - resets current GUI configuration to defaults
+### Translations
+GUI is fully translatable.  
+For now at least 10 languages are supported(some was translated by computers) 
 
 ### Opening/Manipulating files
 It is possible to open selected files by double clicking on them.
@@ -50,6 +34,7 @@ To open multiple file just select desired files with CTRL key pressed and still 
 
 To open folder containing selected file, just click twice on it with right mouse button.
 
+To invert a selection of files, click on a file with the middle mouse button and it will invert the selection of the other files in the same group.
 
 ## CLI
 Czkawka CLI frontend is great to automate some tasks like removing empty directories.
@@ -69,9 +54,13 @@ By default, all tools only write about results to console, but it is possible wi
 ## Config/Cache files
 Currently, Czkawka stores few config and cache files on disk:
 - `czkawka_gui_config.txt` - stores configuration of GUI which may be loaded at startup
-- `cache_similar_image_SIZE_HASH_FILTER.txt` - stores cache data and hashes which may be used later without needing to compute image hash again - editing this file manually is not recommended, but it is allowed. Each algorithms uses its own file, because hashes are completely different in each.
+- `cache_similar_image_SIZE_HASH_FILTER.bin/json` - stores cache data and hashes which may be used later without needing to compute image hash again.. Each algorithms uses its own file, because hashes are completely different in each.
 - `cache_broken_files.txt` - stores cache data of broken files
-- `cache_duplicates_Blake3.txt` - stores cache data of duplicated files, to not suffer too big of a performance hit when saving/loading file, only already fully hashed files bigger than 5MB are stored. Similar files with replaced `Blake3` to e.g. `SHA256` may be shown, when support for new hashes will be introduced in Czkawka.
+- `cache_duplicates_HASH.txt` - stores cache data of duplicated files, to not suffer too big of a performance hit when saving/loading file, only already fully hashed files bigger than 5MB are stored. Similar files with replaced `Blake3` to e.g. `SHA256` may be shown, when support for new hashes will be introduced in Czkawka.
+- `cache_similar_videos.bin/json` - stores cache data of video files.
+
+Editing `bin` files may cause showing strange crashes, so in case of having any, removing these files should help.  
+It is possible to modify files with JSON extension(may be helpful when moving files to different disk or trying to use cache file on different computer). To do this, it is required to enable in settings option to generate also cache json file. Next file can be changed/modified. By default cache files with `bin` extension are loaded, but if it is missing(can be renamed or removed), then data from json file is loaded if exists.
 
 Config files are located in this path:
 
@@ -87,17 +76,23 @@ Windows - `C:\Users\Username\AppData\Local\Qarmin\Czkawka\cache`
 
 ## Tips, Tricks and Known Bugs
 - **Manually adding multiple directories**  
-  You can manually edit config file `czkawka_gui_config.txt` and add/remove/change directories as you want. After setting required values, configuration must be loaded to Czkawka.
-- **Slow checking of little number similar images**  
-  If you checked before a large number of images (several tens of thousands) and they are still present on the disk, then the required information  about all of them is loaded from and saved to the cache, even if you are working with only few image files. You can rename one of cache file which starts from `cache_similar_image`(to be able to use it again) or delete it - cache will then regenerate but with smaller number of entries and this way it should load and save a lot of faster.
-- **Not all columns are visible**
+  You can manually edit config file `czkawka_gui_config.txt` and add/remove/change directories as you want. After set required values, configuration must be loaded to Czkawka.
+- **Slow checking of little number similar images/duplicates/broken files**  
+  If you checked before a large number of files (several tens of thousands), then the required information about all of them are loaded and saved to the cache, even if you are working with only few files. You can rename one of cache file which starts from `cache_similar_image`(to be able to use it again) or delete it - cache will then regenerate but with smaller number of entries and this way it should load and save cache faster.
+- **Not all columns are always visible**
   For now it is possible that some columns will not be visible when some are too wide. There are 2 workarounds for now
-    - View can be scrolled via horizontal scroll bar
-    - Size of other columns can be slimmed 
-  
-  This is handled via https://github.com/qarmin/czkawka/issues/169
-
+    - View can be scrolled via horizontal scroll bar (1 on image)
+    - Size of other columns can be slimmed (2)
+  This is checked if is possible to do in https://github.com/qarmin/czkawka/issues/169
 ![AA](https://user-images.githubusercontent.com/41945903/125684641-728e264a-34ab-41b1-9853-ab45dc25551f.png)
+- **Opening parent folders**
+    - It is possible to open parent folder of selected items with double click with right mouse button(RMB)
+  it is also possible to open such item with double click with left mouse button(LMB).
+- **Faster scanning for big number of duplicates**  
+  By default for all files grouped by same size are computed partial hash(hash from only of 2KB each file). Such hash is computed usually very fast, especially on SSD and fast multicore processors. But when scanning a hundred of thousands or millions of files with HDD or slow processor, usually this step can take much time. In settings exists option `Use prehash cache` which enables caching such things. It is disabled by default because can increase time of loading/saving cache, with big number of entries.
+- **Permanent store of cache entries**  
+  After each scan, entries in cache are validated and outdated ones(which points at non-existent files) are removed. This may be problematic when scanning external drivers(like pendrives, disks etc.) and later unplugging and plugging them again. In settings exists option `Delete outdated cache entries automatically` which automatically clear this, but this can be disabled. Disabling such option may create big cache files, so button `Remove outdated results` will do it manually.
+
 
 # Tools
 
@@ -132,16 +127,13 @@ Duplicate Finder allows you to search for files and group them according to a pr
     - Checking the hash - After leaving files that have the same beginning in groups, you should now check the whole contents
       of the file to make sure they are identical.
 
-- **By hashmb** - Works the same way as via hash, only in the last phase it does not calculate the hash of the whole file but only of its first
-  megabyte. It is perfect for quick search of possible duplicate files.
-
 ### Empty Files
 Searching for empty files is easy and fast, because we only need to check the file metadata and its length.
 
 ### Empty Directories
 At the beginning, a special entry is created for each directory containing - the parent path (only if it is not a folder
 directly selected by the user) and a flag to indicate whether the given directory is empty (at the beginning each one is
-set to be potentionally empty).
+set to be potentially empty).
 
 First, user-defined folders are put into the pool of folders to be checked.
 
@@ -163,23 +155,15 @@ For each file inside the given path its size is read and then after sorting the 
 ### Temporary Files
 Searching for temporary files only involves comparing their extensions with a previously prepared list.
 
-Currently files with these extensions are considered temporary files -
+Currently, files with these extensions are considered temporary files -
 ```
 ["#", "thumbs.db", ".bak", "~", ".tmp", ".temp", ".ds_store", ".crdownload", ".part", ".cache", ".dmp", ".download", ".partial"]
 ```
 
 This only removes the most basic temporary files, for more I suggest to use BleachBit.
 
-### Zeroed Files
-Zeroed files very often are results of e.g. incorrect file downloads.
-
-Their search consists of 3 steps:
-- Collecting a list of all files with a size greater than 0
-- At start, 64 bytes of each file are checked to discard the vast majority of non-zero files without major performance losses.
-- The next step is to check the rest of the file with bigger parts(32KB)
-
 ### Invalid Symlinks
-To find invalid symlinks we must first find symlnks.
+To find invalid symlinks we must first find symlinks.
 
 After searching for them you should check at which element it points to and if it does not exist, add this symlinks into the list of invalid symlinks, pointing to a non-existent path.
 
@@ -207,7 +191,7 @@ It is a tool for finding similar images that differ e.g. in watermark, size etc.
 The tool first collects images with specific extensions that can be checked - `[".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pnm", ".tga", ".ff", ".gif", ".jif", ".jfi", ".ico", ".webp", ".avif"]`.
 
 Next cached data is loaded from file to prevent hashing twice the same file.  
-The cache which points to non existing data is deleted automatically.
+The cache which points to non existing data, by default is deleted automatically.
 
 Then a perceptual hash is created for each image which isn't available in cache.
 
@@ -229,11 +213,11 @@ Next these hashes are saved to file, to be able to open images without needing t
 Finally, each hash is compared with the others and if the distance between them is less than the maximum distance specified by the user, the images are considered similar and thrown from the pool of images to be searched.  
 
 It is possible to choose one of 5 types of hashes - `Gradient`, `Mean`, `VertGradient`, `Blockhash`, `DoubleGradient`.  
-Before calculating hashes usually images are resized with specific algorithm(`Lanczos3`, `Gaussian`, `CatmullRom`, `Triangle`, `Nearest`) to e.g. 8x8 or 16x16 image(allowed sizes - `4x4`, `8x8`, `16x16`), which allows simplifying later computations. Both size and filter can be adjusted in application.
+Before calculating hashes usually images are resized with specific algorithm(`Lanczos3`, `Gaussian`, `CatmullRom`, `Triangle`, `Nearest`) to e.g. 8x8 or 16x16 image(allowed sizes - `8x8`, `16x16`, `32x32`, `64x64`), which allows simplifying later computations. Both size and filter can be adjusted in application.
 
 Each configuration saves results to different cache files to save users from invalid results.
 
-Some images broke hash functions and create hashes full of `0` or `255`, so these images are silently excluded(probably proper error reporting should be provided). 
+Some images broke hash functions and create hashes full of `0` or `255`, so these images are silently excluded from end results(but still are saved to cache).
 
 You can test each algorithm with provided CLI tool, just put to folder `test.jpg` file and run inside this command `czkawka_cli tester -i`
 
@@ -241,11 +225,26 @@ Some tidbits:
 - Smaller hash size not always means that calculating it will take more time
 - `Blockhash` is the only algorithm that don't resize images before hashing
 - `Nearest` resize algorithm can be faster even 5 times than any other available but provide worse results
+
+### Similar Videos
+Tool works similar as Similar Images.  
+
+To work require `FFmpeg`, so it will show an error when it is not found in OS.  
+Also only checks files which are longer than 30s.  
+For now, it is limiting to check video files with almost equal length.
+
+At first, it collects video files by extension (`mp4`, `mpv`, `avi` etc.).  
+Next each file is hashed. Implementation is hidden in library but looks that generate 10 images from this video and hash them with help of perceptual hash.
+
+Such hashes are saved to cache to be able to use them later.
+
+Next, with provided by user tolerance, they are compared to each other and group of similar hashes are returned.
+
 ### Broken Files
 This tool finds files which are corrupted or have an invalid extension.
 
-At first files from specific group (image,archive,audio) are collected and then these files are opened.
+At first files from specific group (image,archive,audio) are collected and then these files are opened(due to additional dependencies, audio files are disabled by default).
 
 If an error happens when opening such file it means that this file is corrupted or unsupported.
 
-Only some file extensions are supported, because I rely on external crates. Also, some false positives may be shown(e.g. https://github.com/image-rs/jpeg-decoder/issues/130) so always open file to check if it is really broken.
+Only some file extensions are handled, because I rely on external crates. Also, some false positives may be shown(e.g. https://github.com/image-rs/jpeg-decoder/issues/130) so always open file to check if it is really broken.

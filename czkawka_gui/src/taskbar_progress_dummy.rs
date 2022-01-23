@@ -1,8 +1,10 @@
 #![allow(clippy::upper_case_acronyms)]
 #![cfg(not(target_os = "windows"))]
+
 use std::convert::From;
 
 enum HWND__ {}
+
 type HWND = *mut HWND__;
 
 #[allow(non_camel_case_types, dead_code)]

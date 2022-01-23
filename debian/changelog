@@ -1,3 +1,9 @@
+czkawka (4.0.0-1kaisen) kaisen-packages; urgency=medium
+
+  * Import 4.0.0 version
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sun, 23 Jan 2021 16:36:27 +0100
+
 czkawka (3.3.1-1kaisen) kaisen-packages; urgency=medium
 
   * First packaging for Kaisen Linux

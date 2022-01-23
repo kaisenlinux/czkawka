@@ -1,14 +1,17 @@
-use czkawka_core::duplicate::{CheckingMethod, DeleteMethod, HashType};
+use std::path::PathBuf;
+
+use img_hash::{FilterType, HashAlg};
+use structopt::StructOpt;
+
+use czkawka_core::common_dir_traversal::CheckingMethod;
+use czkawka_core::duplicate::{DeleteMethod, HashType};
 use czkawka_core::same_music::MusicSimilarity;
 use czkawka_core::similar_images::SimilarityPreset;
-use img_hash::{FilterType, HashAlg};
-use std::path::PathBuf;
-use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "czkawka", help_message = HELP_MESSAGE, template = HELP_TEMPLATE)]
 pub enum Commands {
-    #[structopt(name = "dup", about = "Finds duplicate files", help_message = HELP_MESSAGE, after_help = "EXAMPLE:\n    czkawka dup -d /home/rafal -e /home/rafal/Obrazy  -m 25 -x 7z rar IMAGE -s hashmb -f results.txt -D aeo")]
+    #[structopt(name = "dup", about = "Finds duplicate files", help_message = HELP_MESSAGE, after_help = "EXAMPLE:\n    czkawka dup -d /home/rafal -e /home/rafal/Obrazy  -m 25 -x 7z rar IMAGE -s hash -f results.txt -D aeo")]
     Duplicates {
         #[structopt(flatten)]
         directories: Directories,
@@ -20,15 +23,15 @@ pub enum Commands {
         minimal_file_size: u64,
         #[structopt(short = "i", long, parse(try_from_str = parse_maximal_file_size), default_value = "18446744073709551615", help = "Maximum size in bytes", long_help = "Maximum size of checked files in bytes, assigning lower value may speed up searching")]
         maximal_file_size: u64,
-        #[structopt(short = "c", long, parse(try_from_str = parse_minimal_file_size), default_value = "2097152", help = "Minimum cached file size in bytes", long_help = "Minimum size of cached files in bytes, assigning bigger value may speed up will cause that lower amount of files will be cached, but loading of cache will be faster")]
+        #[structopt(short = "c", long, parse(try_from_str = parse_minimal_file_size), default_value = "257144", help = "Minimum cached file size in bytes", long_help = "Minimum size of cached files in bytes, assigning bigger value may speed up will cause that lower amount of files will be cached, but loading of cache will be faster")]
         minimal_cached_file_size: u64,
         #[structopt(flatten)]
         allowed_extensions: AllowedExtensions,
-        #[structopt(short, long, default_value = "HASH", parse(try_from_str = parse_checking_method), help = "Search method (NAME, SIZE, HASH, HASHMB)", long_help = "Methods to search files.\nNAME - Fast but but rarely usable,\nSIZE - Fast but not accurate, checking by the file's size,\nHASHMB - More accurate but slower, checking by the hash of the file's first mebibyte\nHASH - The slowest method, checking by the hash of the entire file")]
+        #[structopt(short, long, default_value = "HASH", parse(try_from_str = parse_checking_method), help = "Search method (NAME, SIZE, HASH)", long_help = "Methods to search files.\nNAME - Fast but but rarely usable,\nSIZE - Fast but not accurate, checking by the file's size,\nHASH - The slowest method, checking by the hash of the entire file")]
         search_method: CheckingMethod,
         #[structopt(short = "D", long, default_value = "NONE", parse(try_from_str = parse_delete_method), help = "Delete method (AEN, AEO, ON, OO, HARD)", long_help = "Methods to delete the files.\nAEN - All files except the newest,\nAEO - All files except the oldest,\nON - Only 1 file, the newest,\nOO - Only 1 file, the oldest\nHARD - create hard link\nNONE - not delete files")]
         delete_method: DeleteMethod,
-        #[structopt(short = "ht", long, default_value = "BLAKE3", parse(try_from_str = parse_hash_type), help="Hash type (BLAKE3, CRC32, XXH3)")]
+        #[structopt(short = "ht", long, default_value = "BLAKE3", parse(try_from_str = parse_hash_type), help = "Hash type (BLAKE3, CRC32, XXH3)")]
         hash_type: HashType,
         #[structopt(flatten)]
         file_to_save: FileToSave,
@@ -121,33 +124,12 @@ pub enum Commands {
         file_to_save: FileToSave,
         #[structopt(flatten)]
         not_recursive: NotRecursive,
-        #[structopt(short = "g", long, default_value = "Gradient", parse(try_from_str = parse_similar_hash_algorithm), help="Hash algorithm (allowed: Mean, Gradient, Blockhash, VertGradient, DoubleGradient)")]
+        #[structopt(short = "g", long, default_value = "Gradient", parse(try_from_str = parse_similar_hash_algorithm), help = "Hash algorithm (allowed: Mean, Gradient, Blockhash, VertGradient, DoubleGradient)")]
         hash_alg: HashAlg,
-        #[structopt(short = "f", long, default_value = "Lanczos3", parse(try_from_str = parse_similar_image_filter), help="Hash algorithm (allowed: Lanczos3, Nearest, Triangle, Faussian, Catmullrom)")]
+        #[structopt(short = "z", long, default_value = "Lanczos3", parse(try_from_str = parse_similar_image_filter), help = "Hash algorithm (allowed: Lanczos3, Nearest, Triangle, Faussian, Catmullrom)")]
         image_filter: FilterType,
-        #[structopt(short = "c", long, default_value = "8", parse(try_from_str = parse_image_hash_size), help="Hash size (allowed: 4, 8, 16)")]
+        #[structopt(short = "c", long, default_value = "8", parse(try_from_str = parse_image_hash_size), help = "Hash size (allowed: 4, 8, 16)")]
         hash_size: u8,
-    },
-    #[structopt(name = "zeroed", about = "Finds zeroed files", help_message = HELP_MESSAGE, after_help = "EXAMPLE:\n    czkawka zeroed -d /home/rafal -e /home/rafal/Pulpit -f results.txt")]
-    ZeroedFiles {
-        #[structopt(flatten)]
-        directories: Directories,
-        #[structopt(flatten)]
-        excluded_directories: ExcludedDirectories,
-        #[structopt(flatten)]
-        excluded_items: ExcludedItems,
-        #[structopt(flatten)]
-        allowed_extensions: AllowedExtensions,
-        #[structopt(short = "D", long, help = "Delete found files")]
-        delete_files: bool,
-        #[structopt(flatten)]
-        file_to_save: FileToSave,
-        #[structopt(flatten)]
-        not_recursive: NotRecursive,
-        #[structopt(short, long, parse(try_from_str = parse_minimal_file_size), default_value = "8192", help = "Minimum size in bytes", long_help = "Minimum size of checked files in bytes, assigning bigger value may speed up searching")]
-        minimal_file_size: u64,
-        #[structopt(short = "i", long, parse(try_from_str = parse_maximal_file_size), default_value = "18446744073709551615", help = "Maximum size in bytes", long_help = "Maximum size of checked files in bytes, assigning lower value may speed up searching")]
-        maximal_file_size: u64,
     },
     #[structopt(name = "music", about = "Finds same music by tags", help_message = HELP_MESSAGE, after_help = "EXAMPLE:\n    czkawka music -d /home/rafal -f results.txt")]
     SameMusic {
@@ -204,6 +186,29 @@ pub enum Commands {
         #[structopt(flatten)]
         not_recursive: NotRecursive,
     },
+    #[structopt(name = "video", about = "Finds similar video files", help_message = HELP_MESSAGE, after_help = "EXAMPLE:\n    czkawka videos -d /home/rafal -f results.txt")]
+    SimilarVideos {
+        #[structopt(flatten)]
+        directories: Directories,
+        #[structopt(flatten)]
+        excluded_directories: ExcludedDirectories,
+        #[structopt(flatten)]
+        excluded_items: ExcludedItems,
+        // #[structopt(short = "D", long, help = "Delete found files")]
+        // delete_files: bool, TODO
+        #[structopt(flatten)]
+        file_to_save: FileToSave,
+        #[structopt(flatten)]
+        allowed_extensions: AllowedExtensions,
+        #[structopt(flatten)]
+        not_recursive: NotRecursive,
+        #[structopt(short, long, parse(try_from_str = parse_minimal_file_size), default_value = "8192", help = "Minimum size in bytes", long_help = "Minimum size of checked files in bytes, assigning bigger value may speed up searching")]
+        minimal_file_size: u64,
+        #[structopt(short = "i", long, parse(try_from_str = parse_maximal_file_size), default_value = "18446744073709551615", help = "Maximum size in bytes", long_help = "Maximum size of checked files in bytes, assigning lower value may speed up searching")]
+        maximal_file_size: u64,
+        #[structopt(short = "t", long, parse(try_from_str = parse_tolerance), default_value = "10", help = "Video maximium difference (allowed values <0,20>)", long_help = "Maximum difference between video frames, bigger value means that videos can looks more and more different (allowed values <0,20>)")]
+        tolerance: i32,
+    },
     #[structopt(name = "tester", about = "Contains various test", help_message = HELP_MESSAGE, after_help = "EXAMPLE:\n    czkawka tests -i")]
     Tester {
         #[structopt(short = "i", long = "test_image", help = "Test speed of hashing provided test.jpg image with different filters and methods.")]
@@ -213,19 +218,37 @@ pub enum Commands {
 
 #[derive(Debug, StructOpt)]
 pub struct Directories {
-    #[structopt(short, long, parse(from_os_str), required = true, help = "Directorie(s) to search", long_help = "List of directorie(s) which will be searched(absolute path)")]
+    #[structopt(
+        short,
+        long,
+        parse(from_os_str),
+        required = true,
+        help = "Directorie(s) to search",
+        long_help = "List of directorie(s) which will be searched(absolute path)"
+    )]
     pub directories: Vec<PathBuf>,
 }
 
 #[derive(Debug, StructOpt)]
 pub struct ExcludedDirectories {
-    #[structopt(short, long, parse(from_os_str), help = "Excluded directorie(s)", long_help = "List of directorie(s) which will be excluded from search(absolute path)")]
+    #[structopt(
+        short,
+        long,
+        parse(from_os_str),
+        help = "Excluded directorie(s)",
+        long_help = "List of directorie(s) which will be excluded from search(absolute path)"
+    )]
     pub excluded_directories: Vec<PathBuf>,
 }
 
 #[derive(Debug, StructOpt)]
 pub struct ExcludedItems {
-    #[structopt(short = "E", long, help = "Excluded item(s)", long_help = "List of excluded item(s) which contains * wildcard(may be slow, so use -e where possible)")]
+    #[structopt(
+        short = "E",
+        long,
+        help = "Excluded item(s)",
+        long_help = "List of excluded item(s) which contains * wildcard(may be slow, so use -e where possible)"
+    )]
     pub excluded_items: Vec<String>,
 }
 
@@ -283,13 +306,25 @@ fn parse_hash_type(src: &str) -> Result<HashType, &'static str> {
     }
 }
 
+fn parse_tolerance(src: &str) -> Result<i32, &'static str> {
+    match src.parse::<i32>() {
+        Ok(t) => {
+            if (0..=20).contains(&t) {
+                Ok(t)
+            } else {
+                Err("Tolerance should be in range <0,20>(Higher and lower similarity )")
+            }
+        }
+        _ => Err("Failed to parse tolerance as i32 value."),
+    }
+}
+
 fn parse_checking_method(src: &str) -> Result<CheckingMethod, &'static str> {
     match src.to_ascii_lowercase().as_str() {
         "name" => Ok(CheckingMethod::Name),
         "size" => Ok(CheckingMethod::Size),
         "hash" => Ok(CheckingMethod::Hash),
-        "hashmb" => Ok(CheckingMethod::HashMb),
-        _ => Err("Couldn't parse the search method (allowed: NAME, SIZE, HASH, HASHMB)"),
+        _ => Err("Couldn't parse the search method (allowed: NAME, SIZE, HASH)"),
     }
 }
 
@@ -338,8 +373,7 @@ fn parse_maximal_file_size(src: &str) -> Result<u64, String> {
 }
 
 fn parse_similar_image_filter(src: &str) -> Result<FilterType, String> {
-    let filter_type;
-    filter_type = match src.to_lowercase().as_str() {
+    let filter_type = match src.to_lowercase().as_str() {
         "lanczos3" => FilterType::Lanczos3,
         "nearest" => FilterType::Nearest,
         "triangle" => FilterType::Triangle,
@@ -349,9 +383,9 @@ fn parse_similar_image_filter(src: &str) -> Result<FilterType, String> {
     };
     Ok(filter_type)
 }
+
 fn parse_similar_hash_algorithm(src: &str) -> Result<HashAlg, String> {
-    let algorithm;
-    algorithm = match src.to_lowercase().as_str() {
+    let algorithm = match src.to_lowercase().as_str() {
         "mean" => HashAlg::Mean,
         "gradient" => HashAlg::Gradient,
         "blockhash" => HashAlg::Blockhash,
@@ -363,12 +397,12 @@ fn parse_similar_hash_algorithm(src: &str) -> Result<HashAlg, String> {
 }
 
 fn parse_image_hash_size(src: &str) -> Result<u8, String> {
-    let hash_size;
-    hash_size = match src.to_lowercase().as_str() {
-        "4" => 4,
+    let hash_size = match src.to_lowercase().as_str() {
         "8" => 8,
         "16" => 16,
-        _ => return Err("Couldn't parse the image hash size (allowed: 4, 8, 16)".to_string()),
+        "32" => 32,
+        "64" => 64,
+        _ => return Err("Couldn't parse the image hash size (allowed: 8, 16, 32, 64)".to_string()),
     };
     Ok(hash_size)
 }
@@ -422,13 +456,12 @@ SUBCOMMANDS:
     try "{usage} -h" to get more info about a specific tool
 
 EXAMPLES:
-    {bin} dup -d /home/rafal -e /home/rafal/Obrazy  -m 25 -x 7z rar IMAGE -s hashmb -f results.txt -D aeo
+    {bin} dup -d /home/rafal -e /home/rafal/Obrazy  -m 25 -x 7z rar IMAGE -s hash -f results.txt -D aeo
     {bin} empty-folders -d /home/rafal/rr /home/gateway -f results.txt
     {bin} big -d /home/rafal/ /home/piszczal -e /home/rafal/Roman -n 25 -x VIDEO -f results.txt
     {bin} empty-files -d /home/rafal /home/szczekacz -e /home/rafal/Pulpit -R -f results.txt
     {bin} temp -d /home/rafal/ -E */.git */tmp* *Pulpit -f results.txt -D
     {bin} image -d /home/rafal -e /home/rafal/Pulpit -f results.txt
-    {bin} zeroed -d /home/rafal -e /home/krzak -f results.txt"
     {bin} music -d /home/rafal -e /home/rafal/Pulpit -z "artist,year, ARTISTALBUM, ALBUM___tiTlE"  -f results.txt
     {bin} symlinks -d /home/kicikici/ /home/szczek -e /home/kicikici/jestempsem -x jpg -f results.txt
     {bin} broken -d /home/mikrut/ -e /home/mikrut/trakt -f results.txt"#;

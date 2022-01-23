@@ -1,13 +1,4 @@
-use crate::common::Common;
-use crate::common_directory::Directories;
-use crate::common_extensions::Extensions;
-use crate::common_items::ExcludedItems;
-use crate::common_messages::Messages;
-use crate::common_traits::{DebugPrint, PrintResults, SaveResults};
-use crossbeam_channel::Receiver;
-use humansize::{file_size_opts as options, FileSize};
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs::{File, Metadata};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -18,6 +9,19 @@ use std::thread::sleep;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, thread};
+
+use crossbeam_channel::Receiver;
+use humansize::{file_size_opts as options, FileSize};
+use rayon::prelude::*;
+
+use crate::common::{Common, LOOP_DURATION};
+use crate::common_directory::Directories;
+use crate::common_extensions::Extensions;
+use crate::common_items::ExcludedItems;
+use crate::common_messages::Messages;
+use crate::common_traits::{DebugPrint, PrintResults, SaveResults};
+use crate::flc;
+use crate::localizer_core::generate_translation_hashmap;
 
 #[derive(Debug)]
 pub struct ProgressData {
@@ -36,10 +40,10 @@ pub enum DeleteMethod {
     None,
     Delete,
 }
+
 /// Info struck with helpful information's about results
 #[derive(Default)]
 pub struct Info {
-    pub taken_space: u64,
     pub number_of_real_files: usize,
 }
 
@@ -127,17 +131,15 @@ impl BigFile {
         }
 
         //// PROGRESS THREAD START
-        const LOOP_DURATION: u32 = 200; //in ms
         let progress_thread_run = Arc::new(AtomicBool::new(true));
 
         let atomic_file_counter = Arc::new(AtomicU64::new(0));
 
-        let progress_thread_handle;
-        if let Some(progress_sender) = progress_sender {
+        let progress_thread_handle = if let Some(progress_sender) = progress_sender {
             let progress_send = progress_sender.clone();
             let progress_thread_run = progress_thread_run.clone();
             let atomic_file_counter = atomic_file_counter.clone();
-            progress_thread_handle = thread::spawn(move || loop {
+            thread::spawn(move || loop {
                 progress_send
                     .unbounded_send(ProgressData {
                         files_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
@@ -147,96 +149,140 @@ impl BigFile {
                     break;
                 }
                 sleep(Duration::from_millis(LOOP_DURATION as u64));
-            });
+            })
         } else {
-            progress_thread_handle = thread::spawn(|| {});
-        }
+            thread::spawn(|| {})
+        };
 
         //// PROGRESS THREAD END
-
         while !folders_to_check.is_empty() {
             if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                // Be sure that every thread is closed
+                // End thread which send info to gui
                 progress_thread_run.store(false, Ordering::Relaxed);
                 progress_thread_handle.join().unwrap();
                 return false;
             }
 
-            let current_folder = folders_to_check.pop().unwrap();
-            let read_dir = match fs::read_dir(&current_folder) {
-                Ok(t) => t,
-                Err(e) => {
-                    self.text_messages.warnings.push(format!("Cannot open dir {}, reason {}", current_folder.display(), e));
-                    continue;
-                } // Permissions denied
-            };
-            'dir: for entry in read_dir {
-                let entry_data = match entry {
-                    Ok(t) => t,
-                    Err(e) => {
-                        self.text_messages.warnings.push(format!("Cannot read entry in dir {}, reason {}", current_folder.display(), e));
-                        continue;
-                    } //Permissions denied
-                };
-                let metadata: Metadata = match entry_data.metadata() {
-                    Ok(t) => t,
-                    Err(e) => {
-                        self.text_messages.warnings.push(format!("Cannot read metadata in dir {}, reason {}", current_folder.display(), e));
-                        continue;
-                    } //Permissions denied
-                };
-                if metadata.is_dir() {
-                    if !self.recursive_search {
-                        continue;
-                    }
-
-                    let next_folder = current_folder.join(entry_data.file_name());
-                    if self.directories.is_excluded(&next_folder) || self.excluded_items.is_excluded(&next_folder) {
-                        continue 'dir;
-                    }
-
-                    folders_to_check.push(next_folder);
-                } else if metadata.is_file() {
-                    atomic_file_counter.fetch_add(1, Ordering::Relaxed);
-                    // Extracting file extension
-                    let file_extension = entry_data.path().extension().and_then(OsStr::to_str).map(str::to_lowercase);
-
-                    // Checking allowed extensions
-                    if !self.allowed_extensions.file_extensions.is_empty() {
-                        let allowed = self.allowed_extensions.file_extensions.iter().map(|e| e.to_lowercase()).any(|e| file_extension == Some(e));
-                        if !allowed {
-                            // Not an allowed extension, ignore it.
-                            continue 'dir;
+            let segments: Vec<_> = folders_to_check
+                .par_iter()
+                .map(|current_folder| {
+                    let mut dir_result = vec![];
+                    let mut warnings = vec![];
+                    let mut fe_result = vec![];
+                    // Read current dir childrens
+                    let read_dir = match fs::read_dir(&current_folder) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            warnings.push(flc!(
+                                "core_cannot_open_dir",
+                                generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                            ));
+                            return (dir_result, warnings, fe_result);
                         }
-                    }
-
-                    // Checking expressions
-                    let current_file_name = current_folder.join(entry_data.file_name());
-                    if self.excluded_items.is_excluded(&current_file_name) {
-                        continue 'dir;
-                    }
-
-                    // Creating new file entry
-                    let fe: FileEntry = FileEntry {
-                        path: current_file_name.clone(),
-                        size: metadata.len(),
-                        modified_date: match metadata.modified() {
-                            Ok(t) => match t.duration_since(UNIX_EPOCH) {
-                                Ok(d) => d.as_secs(),
-                                Err(_inspected) => {
-                                    self.text_messages.warnings.push(format!("File {} seems to be modified before Unix Epoch.", current_file_name.display()));
-                                    0
-                                }
-                            },
-                            Err(e) => {
-                                self.text_messages.warnings.push(format!("Unable to get modification date from file {}, reason {}", current_file_name.display(), e));
-                                0
-                            }
-                        },
                     };
 
-                    self.big_files.entry(metadata.len()).or_insert_with(Vec::new);
-                    self.big_files.get_mut(&metadata.len()).unwrap().push(fe);
+                    // Check every sub folder/file/link etc.
+                    'dir: for entry in read_dir {
+                        let entry_data = match entry {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warnings.push(flc!(
+                                    "core_cannot_read_entry_dir",
+                                    generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                                ));
+                                continue 'dir;
+                            }
+                        };
+                        let metadata: Metadata = match entry_data.metadata() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warnings.push(flc!(
+                                    "core_cannot_read_metadata_dir",
+                                    generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                                ));
+                                continue 'dir;
+                            }
+                        };
+                        if metadata.is_dir() {
+                            if !self.recursive_search {
+                                continue 'dir;
+                            }
+
+                            let next_folder = current_folder.join(entry_data.file_name());
+                            if self.directories.is_excluded(&next_folder) {
+                                continue 'dir;
+                            }
+
+                            if self.excluded_items.is_excluded(&next_folder) {
+                                continue 'dir;
+                            }
+
+                            dir_result.push(next_folder);
+                        } else if metadata.is_file() {
+                            atomic_file_counter.fetch_add(1, Ordering::Relaxed);
+
+                            let file_name_lowercase: String = match entry_data.file_name().into_string() {
+                                Ok(t) => t,
+                                Err(_inspected) => {
+                                    warnings.push(flc!(
+                                        "core_file_not_utf8_name",
+                                        generate_translation_hashmap(vec![("name", entry_data.path().display().to_string())])
+                                    ));
+                                    continue 'dir;
+                                }
+                            }
+                            .to_lowercase();
+
+                            if !self.allowed_extensions.matches_filename(&file_name_lowercase) {
+                                continue 'dir;
+                            }
+
+                            let current_file_name = current_folder.join(entry_data.file_name());
+                            if self.excluded_items.is_excluded(&current_file_name) {
+                                continue 'dir;
+                            }
+
+                            let fe: FileEntry = FileEntry {
+                                path: current_file_name.clone(),
+                                size: metadata.len(),
+                                modified_date: match metadata.modified() {
+                                    Ok(t) => match t.duration_since(UNIX_EPOCH) {
+                                        Ok(d) => d.as_secs(),
+                                        Err(_inspected) => {
+                                            warnings.push(flc!(
+                                                "core_file_modified_before_epoch",
+                                                generate_translation_hashmap(vec![("name", current_file_name.display().to_string())])
+                                            ));
+                                            0
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warnings.push(flc!(
+                                            "core_file_no_modification_date",
+                                            generate_translation_hashmap(vec![("name", current_file_name.display().to_string()), ("reason", e.to_string())])
+                                        ));
+                                        0
+                                    }
+                                },
+                            };
+
+                            fe_result.push((fe.size, fe));
+                        }
+                    }
+                    (dir_result, warnings, fe_result)
+                })
+                .collect();
+
+            // Advance the frontier
+            folders_to_check.clear();
+
+            // Process collected data
+            for (segment, warnings, fe_result) in segments {
+                folders_to_check.extend(segment);
+                self.text_messages.warnings.extend(warnings);
+                for (size, fe) in fe_result {
+                    self.big_files.entry(size).or_insert_with(Vec::new);
+                    self.big_files.get_mut(&size).unwrap().push(fe);
                 }
             }
         }
@@ -254,7 +300,6 @@ impl BigFile {
                     if self.information.number_of_real_files < self.number_of_files_to_check {
                         new_map.entry(*size).or_insert_with(Vec::new);
                         new_map.get_mut(size).unwrap().push(file.clone());
-                        self.information.taken_space += size;
                         self.information.number_of_real_files += 1;
                     } else {
                         break;
@@ -280,17 +325,14 @@ impl BigFile {
         self.excluded_items.set_excluded_items(excluded_items, &mut self.text_messages);
     }
 
-    /// Remove unused entries when included or excluded overlaps with each other or are duplicated etc.
     fn optimize_directories(&mut self) {
         self.directories.optimize_directories(self.recursive_search, &mut self.text_messages);
     }
 
-    /// Setting included directories, at least one must be provided
     pub fn set_included_directory(&mut self, included_directory: Vec<PathBuf>) {
         self.directories.set_included_directory(included_directory, &mut self.text_messages);
     }
 
-    /// Setting absolute path to exclude
     pub fn set_excluded_directory(&mut self, excluded_directory: Vec<PathBuf>) {
         self.directories.set_excluded_directory(excluded_directory, &mut self.text_messages);
     }
@@ -342,11 +384,10 @@ impl DebugPrint for BigFile {
 
         println!("### Other");
         println!("Big files size {} in {} groups", self.information.number_of_real_files, self.big_files.len());
-        println!("Allowed extensions - {:?}", self.allowed_extensions.file_extensions);
         println!("Excluded items - {:?}", self.excluded_items.items);
         println!("Included directories - {:?}", self.directories.included_directories);
         println!("Excluded directories - {:?}", self.directories.excluded_directories);
-        println!("Recursive search - {}", self.recursive_search.to_string());
+        println!("Recursive search - {}", self.recursive_search);
         println!("Number of files to check - {:?}", self.number_of_files_to_check);
         println!("-----------------------------------------");
     }
@@ -398,7 +439,6 @@ impl SaveResults for BigFile {
 impl PrintResults for BigFile {
     fn print_results(&self) {
         let start_time: SystemTime = SystemTime::now();
-        println!("Found {} files which take {}:", self.information.number_of_real_files, self.information.taken_space.file_size(options::BINARY).unwrap());
         for (size, vector) in self.big_files.iter().rev() {
             // TODO Align all to same width
             for entry in vector {

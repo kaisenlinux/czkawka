@@ -1,19 +1,23 @@
 use std::fs::{File, Metadata};
 use std::io::prelude::*;
+use std::io::BufWriter;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, thread};
 
-use crate::common::Common;
+use crossbeam_channel::Receiver;
+use rayon::prelude::*;
+
+use crate::common::{Common, LOOP_DURATION};
 use crate::common_directory::Directories;
 use crate::common_items::ExcludedItems;
 use crate::common_messages::Messages;
 use crate::common_traits::*;
-use crossbeam_channel::Receiver;
-use std::io::BufWriter;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread::sleep;
+use crate::flc;
+use crate::localizer_core::generate_translation_hashmap;
 
 #[derive(Debug)]
 pub struct ProgressData {
@@ -38,9 +42,8 @@ pub struct FileEntry {
 #[derive(Default)]
 pub struct Info {
     pub number_of_temporary_files: usize,
-    pub number_of_removed_files: usize,
-    pub number_of_failed_to_remove_files: usize,
 }
+
 impl Info {
     pub fn new() -> Self {
         Default::default()
@@ -128,17 +131,15 @@ impl Temporary {
         }
 
         //// PROGRESS THREAD START
-        const LOOP_DURATION: u32 = 200; //in ms
         let progress_thread_run = Arc::new(AtomicBool::new(true));
 
         let atomic_file_counter = Arc::new(AtomicUsize::new(0));
 
-        let progress_thread_handle;
-        if let Some(progress_sender) = progress_sender {
+        let progress_thread_handle = if let Some(progress_sender) = progress_sender {
             let progress_send = progress_sender.clone();
             let progress_thread_run = progress_thread_run.clone();
             let atomic_file_counter = atomic_file_counter.clone();
-            progress_thread_handle = thread::spawn(move || loop {
+            thread::spawn(move || loop {
                 progress_send
                     .unbounded_send(ProgressData {
                         current_stage: 0,
@@ -150,10 +151,10 @@ impl Temporary {
                     break;
                 }
                 sleep(Duration::from_millis(LOOP_DURATION as u64));
-            });
+            })
         } else {
-            progress_thread_handle = thread::spawn(|| {});
-        }
+            thread::spawn(|| {})
+        };
         //// PROGRESS THREAD END
 
         while !folders_to_check.is_empty() {
@@ -164,89 +165,145 @@ impl Temporary {
                 return false;
             }
 
-            let current_folder = folders_to_check.pop().unwrap();
-            // Read current dir, if permission are denied just go to next
-            let read_dir = match fs::read_dir(&current_folder) {
-                Ok(t) => t,
-                Err(e) => {
-                    self.text_messages.warnings.push(format!("Cannot open dir {}, reason {}", current_folder.display(), e));
-                    continue;
-                } // Permissions denied
-            };
-
-            // Check every sub folder/file/link etc.
-            'dir: for entry in read_dir {
-                let entry_data = match entry {
-                    Ok(t) => t,
-                    Err(e) => {
-                        self.text_messages.warnings.push(format!("Cannot read entry in dir {}, reason {}", current_folder.display(), e));
-                        continue;
-                    } //Permissions denied
-                };
-                let metadata: Metadata = match entry_data.metadata() {
-                    Ok(t) => t,
-                    Err(e) => {
-                        self.text_messages.warnings.push(format!("Cannot read metadata in dir {}, reason {}", current_folder.display(), e));
-                        continue;
-                    } //Permissions denied
-                };
-                if metadata.is_dir() {
-                    if !self.recursive_search {
-                        continue;
-                    }
-
-                    let next_folder = current_folder.join(entry_data.file_name());
-                    if self.directories.is_excluded(&next_folder) || self.excluded_items.is_excluded(&next_folder) {
-                        continue 'dir;
-                    }
-
-                    folders_to_check.push(next_folder);
-                } else if metadata.is_file() {
-                    atomic_file_counter.fetch_add(1, Ordering::Relaxed);
-                    let file_name_lowercase: String = match entry_data.file_name().into_string() {
+            let segments: Vec<_> = folders_to_check
+                .par_iter()
+                .map(|current_folder| {
+                    let mut dir_result = vec![];
+                    let mut warnings = vec![];
+                    let mut fe_result = vec![];
+                    // Read current dir childrens
+                    let read_dir = match fs::read_dir(&current_folder) {
                         Ok(t) => t,
-                        Err(_inspected) => {
-                            println!("File {:?} has not valid UTF-8 name", entry_data);
-                            continue 'dir;
+                        Err(e) => {
+                            warnings.push(flc!(
+                                "core_cannot_open_dir",
+                                generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                            ));
+                            return (dir_result, warnings, fe_result);
                         }
-                    }
-                    .to_lowercase();
-
-                    // Temporary files which needs to have dot in name(not sure if exists without dot)
-                    let temporary_with_dot = ["#", "thumbs.db", ".bak", "~", ".tmp", ".temp", ".ds_store", ".crdownload", ".part", ".cache", ".dmp", ".download", ".partial"];
-
-                    if !file_name_lowercase.contains('.') || !temporary_with_dot.iter().any(|f| file_name_lowercase.ends_with(f)) {
-                        continue 'dir;
-                    }
-                    // Checking files
-                    let current_file_name = current_folder.join(entry_data.file_name());
-                    if self.excluded_items.is_excluded(&current_file_name) {
-                        continue 'dir;
-                    }
-
-                    // Creating new file entry
-                    let fe: FileEntry = FileEntry {
-                        path: current_file_name.clone(),
-                        modified_date: match metadata.modified() {
-                            Ok(t) => match t.duration_since(UNIX_EPOCH) {
-                                Ok(d) => d.as_secs(),
-                                Err(_inspected) => {
-                                    self.text_messages.warnings.push(format!("File {} seems to be modified before Unix Epoch.", current_file_name.display()));
-                                    0
-                                }
-                            },
-                            Err(e) => {
-                                self.text_messages.warnings.push(format!("Unable to get modification date from file {}, reason {}", current_file_name.display(), e));
-                                0
-                            } // Permissions Denied
-                        },
                     };
 
-                    // Adding files to Vector
+                    // Check every sub folder/file/link etc.
+                    'dir: for entry in read_dir {
+                        let entry_data = match entry {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warnings.push(flc!(
+                                    "core_cannot_read_entry_dir",
+                                    generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                                ));
+                                continue 'dir;
+                            }
+                        };
+                        let metadata: Metadata = match entry_data.metadata() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warnings.push(flc!(
+                                    "core_cannot_read_metadata_dir",
+                                    generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                                ));
+                                continue 'dir;
+                            }
+                        };
+                        if metadata.is_dir() {
+                            if !self.recursive_search {
+                                continue 'dir;
+                            }
+
+                            let next_folder = current_folder.join(entry_data.file_name());
+                            if self.directories.is_excluded(&next_folder) {
+                                continue 'dir;
+                            }
+
+                            if self.excluded_items.is_excluded(&next_folder) {
+                                continue 'dir;
+                            }
+
+                            dir_result.push(next_folder);
+                        } else if metadata.is_file() {
+                            atomic_file_counter.fetch_add(1, Ordering::Relaxed);
+
+                            let file_name_lowercase: String = match entry_data.file_name().into_string() {
+                                Ok(t) => t,
+                                Err(_inspected) => {
+                                    warnings.push(flc!(
+                                        "core_file_not_utf8_name",
+                                        generate_translation_hashmap(vec![("name", entry_data.path().display().to_string())])
+                                    ));
+                                    continue 'dir;
+                                }
+                            }
+                            .to_lowercase();
+
+                            if ![
+                                "#",
+                                "thumbs.db",
+                                ".bak",
+                                "~",
+                                ".tmp",
+                                ".temp",
+                                ".ds_store",
+                                ".crdownload",
+                                ".part",
+                                ".cache",
+                                ".dmp",
+                                ".download",
+                                ".partial",
+                            ]
+                            .iter()
+                            .any(|f| file_name_lowercase.ends_with(f))
+                            {
+                                continue 'dir;
+                            }
+                            let current_file_name = current_folder.join(entry_data.file_name());
+                            if self.excluded_items.is_excluded(&current_file_name) {
+                                continue 'dir;
+                            }
+
+                            // Creating new file entry
+                            let fe: FileEntry = FileEntry {
+                                path: current_file_name.clone(),
+                                modified_date: match metadata.modified() {
+                                    Ok(t) => match t.duration_since(UNIX_EPOCH) {
+                                        Ok(d) => d.as_secs(),
+                                        Err(_inspected) => {
+                                            warnings.push(flc!(
+                                                "core_file_modified_before_epoch",
+                                                generate_translation_hashmap(vec![("name", current_file_name.display().to_string())])
+                                            ));
+                                            0
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warnings.push(flc!(
+                                            "core_file_no_modification_date",
+                                            generate_translation_hashmap(vec![("name", current_file_name.display().to_string()), ("reason", e.to_string())])
+                                        ));
+                                        0
+                                    } // Permissions Denied
+                                },
+                            };
+
+                            fe_result.push(fe);
+                        }
+                    }
+                    (dir_result, warnings, fe_result)
+                })
+                .collect();
+
+            // Advance the frontier
+            folders_to_check.clear();
+
+            // Process collected data
+            for (segment, warnings, fe_result) in segments {
+                folders_to_check.extend(segment);
+                self.text_messages.warnings.extend(warnings);
+                for fe in fe_result {
                     self.temporary_files.push(fe);
                 }
             }
         }
+
         // End thread which send info to gui
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
@@ -276,6 +333,7 @@ impl Temporary {
         Common::print_time(start_time, SystemTime::now(), "delete_files".to_string());
     }
 }
+
 impl Default for Temporary {
     fn default() -> Self {
         Self::new()
@@ -296,8 +354,6 @@ impl DebugPrint for Temporary {
         println!("Errors size - {}", self.text_messages.errors.len());
         println!("Warnings size - {}", self.text_messages.warnings.len());
         println!("Messages size - {}", self.text_messages.messages.len());
-        println!("Number of removed files - {}", self.information.number_of_removed_files);
-        println!("Number of failed to remove files - {}", self.information.number_of_failed_to_remove_files);
 
         println!("### Other");
 
@@ -305,11 +361,12 @@ impl DebugPrint for Temporary {
         println!("Excluded items - {:?}", self.excluded_items.items);
         println!("Included directories - {:?}", self.directories.included_directories);
         println!("Excluded directories - {:?}", self.directories.excluded_directories);
-        println!("Recursive search - {}", self.recursive_search.to_string());
+        println!("Recursive search - {}", self.recursive_search);
         println!("Delete Method - {:?}", self.delete_method);
         println!("-----------------------------------------");
     }
 }
+
 impl SaveResults for Temporary {
     fn save_results_to_file(&mut self, file_name: &str) -> bool {
         let start_time: SystemTime = SystemTime::now();
@@ -348,6 +405,7 @@ impl SaveResults for Temporary {
         true
     }
 }
+
 impl PrintResults for Temporary {
     fn print_results(&self) {
         let start_time: SystemTime = SystemTime::now();

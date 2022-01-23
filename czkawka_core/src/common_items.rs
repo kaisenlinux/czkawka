@@ -1,9 +1,10 @@
-use crate::common::Common;
-use crate::common_messages::Messages;
 use std::path::Path;
 use std::time::SystemTime;
 
-#[derive(Default)]
+use crate::common::Common;
+use crate::common_messages::Messages;
+
+#[derive(Clone, Default)]
 pub struct ExcludedItems {
     pub items: Vec<String>,
 }
@@ -27,12 +28,13 @@ impl ExcludedItems {
         for expression in expressions {
             let expression: String = expression.trim().to_string();
 
-            #[cfg(target_family = "windows")]
-            let expression = expression.replace("/", "\\");
-
             if expression.is_empty() {
                 continue;
             }
+
+            #[cfg(target_family = "windows")]
+            let expression = expression.replace("/", "\\");
+
             if expression == "DEFAULT" {
                 if cfg!(target_family = "unix") {
                     checked_expressions.push("*/.git/*,*/node_modules/*,*/lost+found/*,*/Trash/*,*/.Trash-*/*,*/snap/*,/home/*/.cache/*".to_string());
@@ -43,7 +45,9 @@ impl ExcludedItems {
                 continue;
             }
             if !expression.contains('*') {
-                text_messages.warnings.push("Excluded Items Warning: Wildcard * is required in expression, ignoring ".to_string() + expression.as_str());
+                text_messages
+                    .warnings
+                    .push("Excluded Items Warning: Wildcard * is required in expression, ignoring ".to_string() + expression.as_str());
                 continue;
             }
 

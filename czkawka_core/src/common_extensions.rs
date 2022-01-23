@@ -1,10 +1,11 @@
-use crate::common::Common;
-use crate::common_messages::Messages;
 use std::time::SystemTime;
 
-#[derive(Default)]
+use crate::common::Common;
+use crate::common_messages::Messages;
+
+#[derive(Clone, Default)]
 pub struct Extensions {
-    pub file_extensions: Vec<String>,
+    file_extensions: Vec<String>,
 }
 
 impl Extensions {
@@ -15,7 +16,7 @@ impl Extensions {
     /// After, extensions cannot contains any dot, commas etc.
     pub fn set_allowed_extensions(&mut self, mut allowed_extensions: String, text_messages: &mut Messages) {
         let start_time: SystemTime = SystemTime::now();
-        if allowed_extensions.is_empty() {
+        if allowed_extensions.trim().is_empty() {
             return;
         }
         allowed_extensions = allowed_extensions.replace("IMAGE", "jpg,kra,gif,png,bmp,tiff,hdr,svg");
@@ -23,29 +24,57 @@ impl Extensions {
         allowed_extensions = allowed_extensions.replace("MUSIC", "mp3,flac,ogg,tta,wma,webm");
         allowed_extensions = allowed_extensions.replace("TEXT", "txt,doc,docx,odt,rtf");
 
-        let extensions: Vec<String> = allowed_extensions.split(',').map(String::from).collect();
+        let extensions: Vec<String> = allowed_extensions.split(',').map(|e| e.trim()).map(String::from).collect();
         for mut extension in extensions {
-            if extension.is_empty() || extension.replace('.', "").trim() == "" {
+            if extension.is_empty() || extension.replace('.', "").replace(' ', "").trim().is_empty() {
                 continue;
             }
 
-            if extension.starts_with('.') {
-                extension = extension[1..].to_string();
+            if !extension.starts_with('.') {
+                extension = format!(".{}", extension);
             }
 
             if extension[1..].contains('.') {
-                text_messages.warnings.push(".".to_string() + extension.as_str() + " is not valid extension(valid extension doesn't have dot inside)");
+                text_messages.warnings.push(format!("{} is not valid extension because contains dot inside", extension));
                 continue;
             }
 
-            if !self.file_extensions.contains(&extension.trim().to_string()) {
-                self.file_extensions.push(extension.trim().to_string());
+            if extension[1..].contains(' ') {
+                text_messages
+                    .warnings
+                    .push(format!("{} is not valid extension because contains empty space inside", extension));
+                continue;
+            }
+
+            if !self.file_extensions.contains(&extension) {
+                self.file_extensions.push(extension);
             }
         }
 
         if self.file_extensions.is_empty() {
-            text_messages.messages.push("No valid extensions were provided, so allowing all extensions by default.".to_string());
+            text_messages
+                .messages
+                .push("No valid extensions were provided, so allowing all extensions by default.".to_string());
         }
         Common::print_time(start_time, SystemTime::now(), "set_allowed_extensions".to_string());
+    }
+
+    pub fn matches_filename(&self, file_name: &str) -> bool {
+        // assert_eq!(file_name, file_name.to_lowercase());
+        if !self.file_extensions.is_empty() && !self.file_extensions.iter().any(|e| file_name.ends_with(e)) {
+            return false;
+        }
+        true
+    }
+
+    pub fn using_custom_extensions(&self) -> bool {
+        !self.file_extensions.is_empty()
+    }
+
+    pub fn extend_allowed_extensions(&mut self, file_extensions: &[&str]) {
+        for extension in file_extensions {
+            assert!(extension.starts_with('.'));
+            self.file_extensions.push(extension.to_string());
+        }
     }
 }
