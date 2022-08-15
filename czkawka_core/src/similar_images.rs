@@ -14,11 +14,15 @@ use bk_tree::BKTree;
 use crossbeam_channel::Receiver;
 use humansize::{file_size_opts as options, FileSize};
 use image::GenericImageView;
-use img_hash::{FilterType, HashAlg, HasherConfig};
+use image_hasher::{FilterType, HashAlg, HasherConfig};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{get_dynamic_image_from_raw_image, open_cache_folder, Common, LOOP_DURATION};
+#[cfg(feature = "heif")]
+use crate::common::get_dynamic_image_from_heic;
+use crate::common::{
+    create_crash_message, get_dynamic_image_from_raw_image, open_cache_folder, Common, HEIC_EXTENSIONS, IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS, LOOP_DURATION, RAW_IMAGE_EXTENSIONS,
+};
 use crate::common_directory::Directories;
 use crate::common_extensions::Extensions;
 use crate::common_items::ExcludedItems;
@@ -27,28 +31,8 @@ use crate::common_traits::{DebugPrint, PrintResults, SaveResults};
 use crate::flc;
 use crate::localizer_core::generate_translation_hashmap;
 
-pub const RAW_IMAGE_EXTENSIONS: [&str; 24] = [
-    ".mrw", ".arw", ".srf", ".sr2", ".mef", ".orf", ".srw", ".erf", ".kdc", ".kdc", ".dcs", ".rw2", ".raf", ".dcr", ".dng", ".pef", ".crw", ".iiq", ".3fr", ".nrw", ".nef", ".mos",
-    ".cr2", ".ari",
-];
-pub const IMAGE_RS_EXTENSIONS: [&str; 13] = [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".webp", ".gif", ".ico"];
-
-pub const IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS: [&str; 9] = [
-    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", //,".bmp",
-];
-pub const IMAGE_RS_BROKEN_FILES_EXTENSIONS: [&str; 10] = [
-    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".gif", //,".bmp", ".ico"
-];
-pub const ZIP_FILES_EXTENSIONS: [&str; 1] = [".zip"];
-
-pub const AUDIO_FILES_EXTENSIONS: [&str; 4] = [".mp3", ".flac", ".wav", ".ogg"];
-
-pub const VIDEO_FILES_EXTENSIONS: [&str; 16] = [
-    ".mp4", ".mpv", ".flv", ".mp4a", ".webm", ".mpg", ".mp2", ".mpeg", ".m4p", ".m4v", ".avi", ".wmv", ".qt", ".mov", ".swf", ".mkv",
-];
-
 pub const SIMILAR_VALUES: [[u32; 6]; 4] = [
-    [0, 2, 5, 7, 14, 20],    // 8
+    [1, 2, 5, 7, 14, 20],    // 8
     [2, 5, 15, 30, 40, 40],  // 16
     [4, 10, 20, 40, 40, 40], // 32
     [6, 20, 40, 40, 40, 40], // 64
@@ -62,11 +46,6 @@ pub struct ProgressData {
     pub images_to_check: usize,
 }
 
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize)]
-pub enum Similarity {
-    Similar(u32),
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileEntry {
     pub path: PathBuf,
@@ -74,12 +53,13 @@ pub struct FileEntry {
     pub dimensions: String,
     pub modified_date: u64,
     pub hash: Vec<u8>,
-    pub similarity: Similarity,
+    pub similarity: u32,
 }
 
 /// Used by CLI tool when we cannot use directly values
 #[derive(Clone, Debug)]
 pub enum SimilarityPreset {
+    Original,
     VeryHigh,
     High,
     Medium,
@@ -117,7 +97,7 @@ pub struct SimilarImages {
     maximal_file_size: u64,
     image_hashes: HashMap<Vec<u8>, Vec<FileEntry>>, // Hashmap with image hashes and Vector with names of files
     stopped_search: bool,
-    similarity: Similarity,
+    similarity: u32,
     images_to_check: HashMap<String, FileEntry>,
     hash_size: u8,
     hash_alg: HashAlg,
@@ -126,7 +106,6 @@ pub struct SimilarImages {
     delete_outdated_cache: bool,
     exclude_images_with_same_size: bool,
     use_reference_folders: bool,
-    fast_comparing: bool,
     save_also_as_json: bool,
 }
 
@@ -161,7 +140,7 @@ impl SimilarImages {
             maximal_file_size: u64::MAX,
             image_hashes: Default::default(),
             stopped_search: false,
-            similarity: Similarity::Similar(1),
+            similarity: 0,
             images_to_check: Default::default(),
             hash_size: 8,
             hash_alg: HashAlg::Gradient,
@@ -170,7 +149,6 @@ impl SimilarImages {
             delete_outdated_cache: true,
             exclude_images_with_same_size: false,
             use_reference_folders: false,
-            fast_comparing: false,
             save_also_as_json: false,
         }
     }
@@ -200,9 +178,6 @@ impl SimilarImages {
         self.image_filter = image_filter;
     }
 
-    pub fn set_fast_comparing(&mut self, fast_comparing: bool) {
-        self.fast_comparing = fast_comparing;
-    }
     pub fn set_save_also_as_json(&mut self, save_also_as_json: bool) {
         self.save_also_as_json = save_also_as_json;
     }
@@ -238,6 +213,14 @@ impl SimilarImages {
     pub fn set_recursive_search(&mut self, recursive_search: bool) {
         self.recursive_search = recursive_search;
     }
+
+    #[cfg(target_family = "unix")]
+    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
+        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
+    }
+    #[cfg(not(target_family = "unix"))]
+    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
+
     pub fn set_allowed_extensions(&mut self, allowed_extensions: String) {
         self.allowed_extensions.set_allowed_extensions(allowed_extensions, &mut self.text_messages);
     }
@@ -254,7 +237,7 @@ impl SimilarImages {
             t => t,
         };
     }
-    pub fn set_similarity(&mut self, similarity: Similarity) {
+    pub fn set_similarity(&mut self, similarity: u32) {
         self.similarity = similarity;
     }
 
@@ -291,8 +274,16 @@ impl SimilarImages {
         let mut folders_to_check: Vec<PathBuf> = Vec::with_capacity(1024 * 2); // This should be small enough too not see to big difference and big enough to store most of paths without needing to resize vector
 
         if !self.allowed_extensions.using_custom_extensions() {
-            self.allowed_extensions.extend_allowed_extensions(&IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS);
-            self.allowed_extensions.extend_allowed_extensions(&RAW_IMAGE_EXTENSIONS);
+            self.allowed_extensions.extend_allowed_extensions(IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS);
+            self.allowed_extensions.extend_allowed_extensions(RAW_IMAGE_EXTENSIONS);
+            #[cfg(feature = "heif")]
+            self.allowed_extensions.extend_allowed_extensions(HEIC_EXTENSIONS);
+        } else {
+            self.allowed_extensions
+                .validate_allowed_extensions(&[IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS, RAW_IMAGE_EXTENSIONS, HEIC_EXTENSIONS].concat());
+            if !self.allowed_extensions.using_custom_extensions() {
+                return true;
+            }
         }
 
         // Add root folders for finding
@@ -313,7 +304,7 @@ impl SimilarImages {
                 progress_send
                     .unbounded_send(ProgressData {
                         current_stage: 0,
-                        max_stage: 2,
+                        max_stage: 3,
                         images_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
                         images_to_check: 0,
                     })
@@ -390,6 +381,15 @@ impl SimilarImages {
                                 continue 'dir;
                             }
 
+                            #[cfg(target_family = "unix")]
+                            if self.directories.exclude_other_filesystems() {
+                                match self.directories.is_on_other_filesystems(&next_folder) {
+                                    Ok(true) => continue 'dir,
+                                    Err(e) => warnings.push(e.to_string()),
+                                    _ => (),
+                                }
+                            }
+
                             dir_result.push(next_folder);
                         } else if metadata.is_file() {
                             atomic_file_counter.fetch_add(1, Ordering::Relaxed);
@@ -442,7 +442,7 @@ impl SimilarImages {
                                     },
 
                                     hash: Vec::new(),
-                                    similarity: Similarity::Similar(0),
+                                    similarity: 0,
                                 };
 
                                 fe_result.push((current_file_name.to_string_lossy().to_string(), fe));
@@ -520,6 +520,7 @@ impl SimilarImages {
         let hash_map_modification = SystemTime::now();
 
         //// PROGRESS THREAD START
+        let check_was_stopped = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
         let progress_thread_run = Arc::new(AtomicBool::new(true));
 
         let atomic_file_counter = Arc::new(AtomicUsize::new(0));
@@ -533,7 +534,7 @@ impl SimilarImages {
                 progress_send
                     .unbounded_send(ProgressData {
                         current_stage: 1,
-                        max_stage: 2,
+                        max_stage: 3,
                         images_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
                         images_to_check,
                     })
@@ -553,22 +554,35 @@ impl SimilarImages {
             .map(|(_s, mut file_entry)| {
                 atomic_file_counter.fetch_add(1, Ordering::Relaxed);
                 if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+                    check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
                 }
                 let file_name_lowercase = file_entry.path.to_string_lossy().to_lowercase();
 
                 let image;
 
-                if !IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS.iter().any(|e| file_name_lowercase.ends_with(e)){
+                #[allow(clippy::never_loop)] // Required to implement nice if/else
+                'krztyna: loop {
+                    if RAW_IMAGE_EXTENSIONS.iter().any(|e| file_name_lowercase.ends_with(e)) {
+                        image = match get_dynamic_image_from_raw_image(&file_entry.path) {
+                            Some(t) => t,
+                            None => return Some(Some((file_entry, Vec::new()))),
+                        };
+                        break 'krztyna;
+                    }
 
-                    image = match get_dynamic_image_from_raw_image(&file_entry.path){
-                        Some(t) => t,
-                        None =>
-                        return Some(Some((file_entry, Vec::new())))
-                    };
-                }
-                else {
+                    #[cfg(feature = "heif")]
+                    if HEIC_EXTENSIONS.iter().any(|e| file_name_lowercase.ends_with(e)) {
+                        image = match get_dynamic_image_from_heic(&file_entry.path.to_string_lossy().to_string()) {
+                            Ok(t) => t,
+                            Err(_) => {
+                                return Some(Some((file_entry, Vec::new())));
+                            }
+                        };
+                        break 'krztyna;
+                    }
 
+                    // Normal image extension, when any other fail, not using if/else
                     let result = panic::catch_unwind(|| {
                         match image::open(file_entry.path.clone()) {
                             Ok(t) => Ok(t),
@@ -587,30 +601,30 @@ impl SimilarImages {
                             return Some(Some((file_entry, Vec::new())));
                         }
                     } else {
-                        println!("Image-rs library crashed when opening \"{:?}\" image, please check if problem happens with latest image-rs version(this can be checked via https://github.com/qarmin/ImageOpening tool) and if it is not reported, please report bug here - https://github.com/image-rs/image/issues", file_entry.path);
+                        let message = create_crash_message("Image-rs", &file_entry.path.to_string_lossy().to_string(), "https://github.com/image-rs/image/issues");
+                        println!("{message}");
                         return Some(Some((file_entry, Vec::new())));
                     }
+
+                    break 'krztyna;
                 }
 
+                let dimensions = image.dimensions();
 
-                    let dimensions = image.dimensions();
+                file_entry.dimensions = format!("{}x{}", dimensions.0, dimensions.1);
 
-                    file_entry.dimensions = format!("{}x{}", dimensions.0, dimensions.1);
+                let hasher_config = HasherConfig::new()
+                    .hash_size(self.hash_size as u32, self.hash_size as u32)
+                    .hash_alg(self.hash_alg)
+                    .resize_filter(self.image_filter);
+                let hasher = hasher_config.to_hasher();
 
-                    let hasher_config = HasherConfig::new()
-                        .hash_size(self.hash_size as u32, self.hash_size as u32)
-                        .hash_alg(self.hash_alg)
-                        .resize_filter(self.image_filter);
-                    let hasher = hasher_config.to_hasher();
+                let hash = hasher.hash_image(&image);
+                let buf: Vec<u8> = hash.as_bytes().to_vec();
 
-                    let hash = hasher.hash_image(&image);
-                    let buf: Vec<u8> = hash.as_bytes().to_vec();
+                file_entry.hash = buf.clone();
 
-                    file_entry.hash = buf.clone();
-
-                    Some(Some((file_entry, buf)))
-
-
+                Some(Some((file_entry, buf)))
             })
             .while_some()
             .filter(|file_entry| file_entry.is_some())
@@ -633,8 +647,7 @@ impl SimilarImages {
         for (file_entry, buf) in &vec_file_entry {
             // Only use to comparing, non broken hashes(all 0 or 255 hashes means that algorithm fails to decode them because e.g. contains a log of alpha channel)
             if !(buf.is_empty() || buf.iter().all(|e| *e == 0) || buf.iter().all(|e| *e == 255)) {
-                self.image_hashes.entry(buf.clone()).or_insert_with(Vec::<FileEntry>::new);
-                self.image_hashes.get_mut(buf).unwrap().push(file_entry.clone());
+                self.image_hashes.entry(buf.clone()).or_insert_with(Vec::<FileEntry>::new).push(file_entry.clone());
             }
         }
 
@@ -654,189 +667,262 @@ impl SimilarImages {
             );
         }
 
+        // Break if stop was clicked after saving to cache
+        if check_was_stopped.load(Ordering::Relaxed) {
+            return false;
+        }
+
         Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - saving data to files".to_string());
         true
     }
 
     fn find_similar_hashes(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
+        if self.image_hashes.is_empty() {
+            return true;
+        }
+
         let hash_map_modification = SystemTime::now();
-        let Similarity::Similar(similarity) = self.similarity;
+        let tolerance = self.similarity;
 
         // Results
         let mut collected_similar_images: HashMap<Vec<u8>, Vec<FileEntry>> = Default::default();
 
-        let mut temp_hashes = Default::default();
-        mem::swap(&mut temp_hashes, &mut self.image_hashes);
+        let mut all_hashed_images = Default::default();
+        mem::swap(&mut all_hashed_images, &mut self.image_hashes);
 
-        let mut this_time_check_hashes; // Temporary variable which
-        let mut master_of_group: HashSet<Vec<u8>> = Default::default(); // Hashes which are "master of groups",
+        let all_hashes: Vec<_> = all_hashed_images.keys().collect();
 
-        let mut all_hashes_to_check: HashMap<Vec<u8>, Vec<FileEntry>> = temp_hashes.clone(); // List of all hashes, which are or can be master of group
-        let mut available_hashes: HashMap<Vec<u8>, Vec<FileEntry>> = Default::default(); // List of hashes which can be used as similar images
-        for (hash, vec_file_entry) in temp_hashes {
-            // There exists 2 or more images with same hash
-            if vec_file_entry.len() >= 2 {
-                master_of_group.insert(hash.clone());
-                collected_similar_images.insert(hash, vec_file_entry);
-            } else {
-                self.bktree.add(hash.clone());
-                available_hashes.insert(hash, vec_file_entry);
+        // Checking entries with tolerance 0 is really easy and fast, because only entries with same hashes needs to be checked
+        if tolerance == 0 {
+            for (hash, vec_file_entry) in all_hashed_images.clone() {
+                if vec_file_entry.len() >= 2 {
+                    collected_similar_images.insert(hash, vec_file_entry);
+                }
             }
-        }
-
-        //// PROGRESS THREAD START
-        let progress_thread_run = Arc::new(AtomicBool::new(true));
-
-        let atomic_mode_counter = Arc::new(AtomicUsize::new(0));
-
-        let progress_thread_handle = if let Some(progress_sender) = progress_sender {
-            let progress_send = progress_sender.clone();
-            let progress_thread_run = progress_thread_run.clone();
-            let atomic_mode_counter = atomic_mode_counter.clone();
-            let all_images = match self.fast_comparing {
-                false => similarity as usize * available_hashes.len(),
-                true => available_hashes.len(),
-            };
-            thread::spawn(move || loop {
-                progress_send
-                    .unbounded_send(ProgressData {
-                        current_stage: 2,
-                        max_stage: 2,
-                        images_checked: atomic_mode_counter.load(Ordering::Relaxed) as usize,
-                        images_to_check: all_images,
-                    })
-                    .unwrap();
-                if !progress_thread_run.load(Ordering::Relaxed) {
-                    break;
-                }
-                sleep(Duration::from_millis(LOOP_DURATION as u64));
-            })
         } else {
-            thread::spawn(|| {})
-        };
-        //// PROGRESS THREAD END
-        if similarity >= 1 {
-            if self.fast_comparing {
-                this_time_check_hashes = all_hashes_to_check.clone();
+            //// PROGRESS THREAD START
+            let check_was_stopped = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
+            let progress_thread_run = Arc::new(AtomicBool::new(true));
+            let atomic_mode_counter = Arc::new(AtomicUsize::new(0));
 
-                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                    // End thread which send info to gui
-                    progress_thread_run.store(false, Ordering::Relaxed);
-                    progress_thread_handle.join().unwrap();
-                    return false;
-                }
-
-                for (hash, mut vec_file_entry) in this_time_check_hashes.into_iter() {
-                    atomic_mode_counter.fetch_add(1, Ordering::Relaxed);
-
-                    // It is not available, because in same iteration, was already taken out
-                    if !all_hashes_to_check.contains_key(&hash) {
-                        continue;
+            let progress_thread_handle = if let Some(progress_sender) = progress_sender {
+                let progress_send = progress_sender.clone();
+                let progress_thread_run = progress_thread_run.clone();
+                let atomic_mode_counter = atomic_mode_counter.clone();
+                let all_combinations_to_check = all_hashes.len();
+                thread::spawn(move || loop {
+                    progress_send
+                        .unbounded_send(ProgressData {
+                            current_stage: 2,
+                            max_stage: 2,
+                            images_checked: atomic_mode_counter.load(Ordering::Relaxed) as usize,
+                            images_to_check: all_combinations_to_check,
+                        })
+                        .unwrap();
+                    if !progress_thread_run.load(Ordering::Relaxed) {
+                        break;
                     }
-
-                    // Finds hashes with specific distance to original one
-                    let vector_with_found_similar_hashes = self
-                        .bktree
-                        .find(&hash, similarity)
-                        .filter(|(similarity, hash)| *similarity != 0 && available_hashes.contains_key(*hash))
-                        .collect::<Vec<_>>();
-
-                    // Not found any hash with specific distance
-                    if vector_with_found_similar_hashes.is_empty() {
-                        continue;
-                    }
-
-                    // Current checked hash isn't in any group of similarity, so we create one, because found similar images
-                    if !master_of_group.contains(&hash) {
-                        master_of_group.insert(hash.clone());
-                        collected_similar_images.insert(hash.clone(), Vec::new());
-                        let _ = available_hashes.remove(&hash); // Cannot be used anymore as non master
-
-                        collected_similar_images.get_mut(&hash).unwrap().append(&mut vec_file_entry);
-
-                        // This shouldn't be executed too much times, so it should be quite fast to check this
-                        if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                            // End thread which send info to gui
-                            progress_thread_run.store(false, Ordering::Relaxed);
-                            progress_thread_handle.join().unwrap();
-                            return false;
-                        }
-                    }
-
-                    vector_with_found_similar_hashes.iter().for_each(|(similarity, other_hash)| {
-                        let _ = all_hashes_to_check.remove(*other_hash); // Cannot be used anymore as master record
-                        let mut vec_fe = available_hashes.remove(*other_hash).unwrap();
-                        for fe in &mut vec_fe {
-                            fe.similarity = Similarity::Similar(*similarity)
-                        }
-
-                        collected_similar_images.get_mut(&hash).unwrap().append(&mut vec_fe);
-                    });
-                }
+                    sleep(Duration::from_millis(LOOP_DURATION as u64));
+                })
             } else {
-                for current_similarity in 1..=similarity {
-                    this_time_check_hashes = all_hashes_to_check.clone();
+                thread::spawn(|| {})
+            };
+            //// PROGRESS THREAD END
 
-                    if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                        // End thread which send info to gui
-                        progress_thread_run.store(false, Ordering::Relaxed);
-                        progress_thread_handle.join().unwrap();
-                        return false;
-                    }
+            for hash in &all_hashes {
+                self.bktree.add(hash.to_vec());
+            }
 
-                    for (hash, mut vec_file_entry) in this_time_check_hashes.into_iter() {
-                        atomic_mode_counter.fetch_add(1, Ordering::Relaxed);
+            let number_of_processors = num_cpus::get();
+            let chunk_size = all_hashes.len() / number_of_processors;
+            let chunks: Vec<_> = if chunk_size > 0 { all_hashes.chunks(chunk_size).collect() } else { vec![&all_hashes] };
 
-                        // It is not available, because in same iteration, was already taken out
-                        if !all_hashes_to_check.contains_key(&hash) {
-                            continue;
+            let parts: Vec<_> = chunks
+                .into_par_iter()
+                .map(|hashes_to_check| {
+                    let mut hashes_parents: HashMap<&Vec<u8>, u32> = Default::default(); // Hash used as parent, childrens
+                    let mut hashes_similarity: HashMap<&Vec<u8>, (&Vec<u8>, u32)> = Default::default(); // Hash used as child, (parent_hash,similarity)
+
+                    // Sprawdź czy hash nie jest użyty jako master gdzie indziej
+                    // Jeśli tak to przejdź do sprawdzania kolejnego elementu
+                    // Zweryfikuj czy sprawdzany element ma rodzica
+                    // Jeśli ma to sprawdź czy similarity nowego rodzica jest mniejsze niż starego
+                    // // Jeśli tak to zmniejsz ilość dzieci starego rodzica, dodaj ilość dzieci w nowym rodzicu i podmień rekord hashes_similarity
+                    // // Jeśli nie to dodaj nowy rekord w hashes_similarity jak i hashes_parents z liczbą dzieci równą 1
+
+                    for (index, hash_to_check) in hashes_to_check.iter().enumerate() {
+                        // Don't check for user stop too often
+                        // Also don't add too ofter data to variables
+                        const CYCLES_COUNTER: usize = 50;
+                        if index % CYCLES_COUNTER == 0 && index != 0 {
+                            atomic_mode_counter.fetch_add(CYCLES_COUNTER, Ordering::Relaxed);
+                            if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+                                check_was_stopped.store(true, Ordering::Relaxed);
+                                return None;
+                            }
                         }
 
-                        // Finds hashes with specific distance to original one
-                        let vector_with_found_similar_hashes = self
+                        let mut found_items = self
                             .bktree
-                            .find(&hash, similarity)
-                            .filter(|(similarity, hash)| (*similarity == current_similarity) && available_hashes.contains_key(*hash))
+                            .find(hash_to_check, tolerance)
+                            .filter(|(similarity, _hash)| *similarity != 0)
                             .collect::<Vec<_>>();
 
-                        // Not found any hash with specific distance
-                        if vector_with_found_similar_hashes.is_empty() {
-                            continue;
-                        }
+                        found_items.sort_unstable_by_key(|f| f.0);
 
-                        // Current checked hash isn't in any group of similarity, so we create one, because found similar images
-                        if !master_of_group.contains(&hash) {
-                            master_of_group.insert(hash.clone());
-                            collected_similar_images.insert(hash.clone(), Vec::new());
-                            let _ = available_hashes.remove(&hash); // Cannot be used anymore as non master
-
-                            collected_similar_images.get_mut(&hash).unwrap().append(&mut vec_file_entry);
-
-                            // This shouldn't be executed too much times, so it should be quite fast to check this
-                            if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                                // End thread which send info to gui
-                                progress_thread_run.store(false, Ordering::Relaxed);
-                                progress_thread_handle.join().unwrap();
-                                return false;
-                            }
-                        }
-
-                        vector_with_found_similar_hashes.iter().for_each(|(similarity, other_hash)| {
-                            let _ = all_hashes_to_check.remove(*other_hash); // Cannot be used anymore as master record
-                            let mut vec_fe = available_hashes.remove(*other_hash).unwrap();
-                            for fe in &mut vec_fe {
-                                fe.similarity = Similarity::Similar(*similarity)
+                        for (similarity, other_hash) in found_items {
+                            // SSSTART
+                            // Cannot use hash if already is used as master record(have more than 0 children)
+                            if let Some(children_number) = hashes_parents.get(other_hash) {
+                                if *children_number > 0 {
+                                    continue;
+                                }
                             }
 
-                            collected_similar_images.get_mut(&hash).unwrap().append(&mut vec_fe);
-                        });
+                            // If there is already record, with smaller sensitivity, then replace it
+                            let mut need_to_add = false;
+                            let mut need_to_check = false;
+
+                            // TODO replace variables from above with closures
+                            // If current checked hash, have parent, first we must check if similarity between them is lower than checked item
+                            if let Some((current_parent_hash, current_similarity_with_parent)) = hashes_similarity.get(hash_to_check) {
+                                if *current_similarity_with_parent > similarity {
+                                    need_to_check = true;
+
+                                    *hashes_parents.get_mut(current_parent_hash).unwrap() -= 1;
+                                    hashes_similarity.remove(hash_to_check).unwrap();
+                                }
+                            } else {
+                                need_to_check = true;
+                            }
+
+                            if need_to_check {
+                                if let Some((other_parent_hash, other_similarity)) = hashes_similarity.get(other_hash) {
+                                    if *other_similarity > similarity {
+                                        need_to_add = true;
+                                        *hashes_parents.get_mut(other_parent_hash).unwrap() -= 1;
+                                    }
+                                }
+                                // But when there is no record, just add it
+                                else {
+                                    need_to_add = true
+                                }
+                            }
+
+                            if need_to_add {
+                                hashes_similarity.insert(other_hash, (hash_to_check, similarity));
+
+                                if let Some(number_of_children) = hashes_parents.get_mut(hash_to_check) {
+                                    *number_of_children += 1;
+                                } else {
+                                    hashes_parents.insert(hash_to_check, 1);
+                                }
+                            }
+                            // ENND
+                        }
                     }
+
+                    #[cfg(debug_assertions)]
+                    debug_check_for_duplicated_things(hashes_parents.clone(), hashes_similarity.clone(), all_hashed_images.clone(), "BEFORE");
+
+                    Some((hashes_parents, hashes_similarity))
+                })
+                .while_some()
+                .collect();
+
+            // End thread which send info to gui
+            progress_thread_run.store(false, Ordering::Relaxed);
+            progress_thread_handle.join().unwrap();
+
+            if check_was_stopped.load(Ordering::Relaxed) {
+                return false;
+            }
+
+            {
+                let mut hashes_parents: HashMap<&Vec<u8>, u32> = Default::default();
+                let mut hashes_similarity: HashMap<&Vec<u8>, (&Vec<u8>, u32)> = Default::default();
+                let mut iter = parts.into_iter();
+                // At start fill arrays with first item
+                // Normal algorithm would do exactly same thing, but slower, one record after one
+                if let Some((first_hashes_parents, first_hashes_similarity)) = iter.next() {
+                    hashes_parents = first_hashes_parents;
+                    hashes_similarity = first_hashes_similarity;
+                }
+
+                for (_partial_hashes_with_parents, partial_hashes_with_similarity) in iter {
+                    for (hash_to_check, (other_hash, similarity)) in partial_hashes_with_similarity {
+                        // SSSTART
+                        // Cannot use hash if already is used as master record(have more than 0 children)
+                        if let Some(children_number) = hashes_parents.get(other_hash) {
+                            if *children_number > 0 {
+                                continue;
+                            }
+                        }
+
+                        // If there is already record, with smaller sensitivity, then replace it
+                        let mut need_to_add = false;
+                        let mut need_to_check = false;
+
+                        // TODO replace variables from above with closures
+                        // If current checked hash, have parent, first we must check if similarity between them is lower than checked item
+                        if let Some((current_parent_hash, current_similarity_with_parent)) = hashes_similarity.get(hash_to_check) {
+                            if *current_similarity_with_parent > similarity {
+                                need_to_check = true;
+
+                                *hashes_parents.get_mut(current_parent_hash).unwrap() -= 1;
+                                hashes_similarity.remove(hash_to_check).unwrap();
+                            }
+                        } else {
+                            need_to_check = true;
+                        }
+
+                        if need_to_check {
+                            if let Some((other_parent_hash, other_similarity)) = hashes_similarity.get(other_hash) {
+                                if *other_similarity > similarity {
+                                    need_to_add = true;
+                                    *hashes_parents.get_mut(other_parent_hash).unwrap() -= 1;
+                                }
+                            }
+                            // But when there is no record, just add it
+                            else {
+                                need_to_add = true
+                            }
+                        }
+
+                        if need_to_add {
+                            hashes_similarity.insert(other_hash, (hash_to_check, similarity));
+
+                            if let Some(number_of_children) = hashes_parents.get_mut(hash_to_check) {
+                                *number_of_children += 1;
+                            } else {
+                                hashes_parents.insert(hash_to_check, 1);
+                            }
+                        }
+                        // ENND
+                    }
+                }
+
+                #[cfg(debug_assertions)]
+                debug_check_for_duplicated_things(hashes_parents.clone(), hashes_similarity.clone(), all_hashed_images.clone(), "LATTER");
+
+                // Collecting results
+
+                for (parent_hash, child_number) in hashes_parents {
+                    if child_number > 0 {
+                        let vec_fe = all_hashed_images.get(parent_hash).unwrap().clone();
+                        collected_similar_images.insert(parent_hash.clone(), vec_fe);
+                    }
+                }
+
+                for (child_hash, (parent_hash, similarity)) in hashes_similarity {
+                    let mut vec_fe = all_hashed_images.get(child_hash).unwrap().clone();
+                    for mut fe in &mut vec_fe {
+                        fe.similarity = similarity;
+                    }
+                    collected_similar_images.get_mut(parent_hash).unwrap().append(&mut vec_fe);
                 }
             }
         }
-
-        progress_thread_run.store(false, Ordering::Relaxed);
-        progress_thread_handle.join().unwrap();
 
         // Validating if group contains duplicated results
         #[cfg(debug_assertions)]
@@ -844,11 +930,21 @@ impl SimilarImages {
             let mut result_hashset: HashSet<String> = Default::default();
             let mut found = false;
             for (_hash, vec_file_entry) in collected_similar_images.iter() {
+                if vec_file_entry.is_empty() {
+                    println!("Empty Element {:?}", vec_file_entry);
+                    found = true;
+                    continue;
+                }
+                if vec_file_entry.len() == 1 {
+                    println!("Single Element {:?}", vec_file_entry);
+                    found = true;
+                    continue;
+                }
                 for file_entry in vec_file_entry {
                     let st = file_entry.path.to_string_lossy().to_string();
                     if result_hashset.contains(&st) {
                         found = true;
-                        println!("Invalid Element {}", st);
+                        println!("Duplicated Element {}", st);
                     } else {
                         result_hashset.insert(st);
                     }
@@ -858,8 +954,7 @@ impl SimilarImages {
                 panic!("Found Invalid entries");
             }
         }
-        // self.similar_vectors = collected_similar_images.into_values().collect(); // TODO use this in Rust 1.54.0
-        self.similar_vectors = collected_similar_images.values().cloned().collect(); // 1.53.0 version
+        self.similar_vectors = collected_similar_images.into_values().collect();
 
         if self.exclude_images_with_same_size {
             let mut new_vector = Default::default();
@@ -880,10 +975,10 @@ impl SimilarImages {
         }
 
         if self.use_reference_folders {
-            let mut similars_vector = Default::default();
-            mem::swap(&mut self.similar_vectors, &mut similars_vector);
+            let mut similar_vector = Default::default();
+            mem::swap(&mut self.similar_vectors, &mut similar_vector);
             let reference_directories = self.directories.reference_directories.clone();
-            self.similar_referenced_vectors = similars_vector
+            self.similar_referenced_vectors = similar_vector
                 .into_iter()
                 .filter_map(|vec_file_entry| {
                     let mut files_from_referenced_folders = Vec::new();
@@ -1125,14 +1220,14 @@ pub fn load_hashes_from_file(
 
 fn get_cache_file(hash_size: &u8, hash_alg: &HashAlg, image_filter: &FilterType) -> String {
     format!(
-        "cache_similar_images_{}_{}_{}.bin",
+        "cache_similar_images_{}_{}_{}_50.bin",
         hash_size,
         convert_algorithm_to_string(hash_alg),
         convert_filters_to_string(image_filter),
     )
 }
 
-pub fn get_string_from_similarity(similarity: &Similarity, hash_size: u8) -> String {
+pub fn get_string_from_similarity(similarity: &u32, hash_size: u8) -> String {
     let index_preset = match hash_size {
         8 => 0,
         16 => 1,
@@ -1141,52 +1236,46 @@ pub fn get_string_from_similarity(similarity: &Similarity, hash_size: u8) -> Str
         _ => panic!(),
     };
 
-    match similarity {
-        // Similarity::None => {
-        //     panic!()
-        // }
-        Similarity::Similar(h) => {
-            // #[cfg(debug_assertions)]
-            // {
-            //     if *h <= SIMILAR_VALUES[index_preset][0] {
-            //         format!("{} {}", flc!("core_similarity_very_high"), *h)
-            //     } else if *h <= SIMILAR_VALUES[index_preset][1] {
-            //         format!("{} {}", flc!("core_similarity_high"), *h)
-            //     } else if *h <= SIMILAR_VALUES[index_preset][2] {
-            //         format!("{} {}", flc!("core_similarity_medium"), *h)
-            //     } else if *h <= SIMILAR_VALUES[index_preset][3] {
-            //         format!("{} {}", flc!("core_similarity_small"), *h)
-            //     } else if *h <= SIMILAR_VALUES[index_preset][4] {
-            //         format!("{} {}", flc!("core_similarity_very_small"), *h)
-            //     } else if *h <= SIMILAR_VALUES[index_preset][5] {
-            //         format!("{} {}", flc!("core_similarity_minimal"), *h)
-            //     } else {
-            //         panic!();
-            //     }
-            // }
-            // #[cfg(not(debug_assertions))]
-            {
-                if *h <= SIMILAR_VALUES[index_preset][0] {
-                    flc!("core_similarity_very_high")
-                } else if *h <= SIMILAR_VALUES[index_preset][1] {
-                    flc!("core_similarity_high")
-                } else if *h <= SIMILAR_VALUES[index_preset][2] {
-                    flc!("core_similarity_medium")
-                } else if *h <= SIMILAR_VALUES[index_preset][3] {
-                    flc!("core_similarity_small")
-                } else if *h <= SIMILAR_VALUES[index_preset][4] {
-                    flc!("core_similarity_very_small")
-                } else if *h <= SIMILAR_VALUES[index_preset][5] {
-                    flc!("core_similarity_minimal")
-                } else {
-                    panic!();
-                }
-            }
-        }
+    // #[cfg(debug_assertions)]
+    // {
+    //     if *similarity <= SIMILAR_VALUES[index_preset][0] {
+    //         format!("{} {}", flc!("core_similarity_very_high"), *similarity)
+    //     } else if *similarity <= SIMILAR_VALUES[index_preset][1] {
+    //         format!("{} {}", flc!("core_similarity_high"), *similarity)
+    //     } else if *similarity <= SIMILAR_VALUES[index_preset][2] {
+    //         format!("{} {}", flc!("core_similarity_medium"), *similarity)
+    //     } else if *similarity <= SIMILAR_VALUES[index_preset][3] {
+    //         format!("{} {}", flc!("core_similarity_small"), *similarity)
+    //     } else if *similarity <= SIMILAR_VALUES[index_preset][4] {
+    //         format!("{} {}", flc!("core_similarity_very_small"), *similarity)
+    //     } else if *similarity <= SIMILAR_VALUES[index_preset][5] {
+    //         format!("{} {}", flc!("core_similarity_minimal"), *similarity)
+    //     } else {
+    //         panic!();
+    //     }
+    // }
+    // #[cfg(not(debug_assertions))]
+
+    if *similarity == 0 {
+        flc!("core_similarity_original")
+    } else if *similarity <= SIMILAR_VALUES[index_preset][0] {
+        flc!("core_similarity_very_high")
+    } else if *similarity <= SIMILAR_VALUES[index_preset][1] {
+        flc!("core_similarity_high")
+    } else if *similarity <= SIMILAR_VALUES[index_preset][2] {
+        flc!("core_similarity_medium")
+    } else if *similarity <= SIMILAR_VALUES[index_preset][3] {
+        flc!("core_similarity_small")
+    } else if *similarity <= SIMILAR_VALUES[index_preset][4] {
+        flc!("core_similarity_very_small")
+    } else if *similarity <= SIMILAR_VALUES[index_preset][5] {
+        flc!("core_similarity_minimal")
+    } else {
+        panic!();
     }
 }
 
-pub fn return_similarity_from_similarity_preset(similarity_preset: &SimilarityPreset, hash_size: u8) -> Similarity {
+pub fn return_similarity_from_similarity_preset(similarity_preset: &SimilarityPreset, hash_size: u8) -> u32 {
     let index_preset = match hash_size {
         8 => 0,
         16 => 1,
@@ -1195,12 +1284,13 @@ pub fn return_similarity_from_similarity_preset(similarity_preset: &SimilarityPr
         _ => panic!(),
     };
     match similarity_preset {
-        SimilarityPreset::VeryHigh => Similarity::Similar(SIMILAR_VALUES[index_preset][0]),
-        SimilarityPreset::High => Similarity::Similar(SIMILAR_VALUES[index_preset][1]),
-        SimilarityPreset::Medium => Similarity::Similar(SIMILAR_VALUES[index_preset][2]),
-        SimilarityPreset::Small => Similarity::Similar(SIMILAR_VALUES[index_preset][3]),
-        SimilarityPreset::VerySmall => Similarity::Similar(SIMILAR_VALUES[index_preset][4]),
-        SimilarityPreset::Minimal => Similarity::Similar(SIMILAR_VALUES[index_preset][5]),
+        SimilarityPreset::Original => 0,
+        SimilarityPreset::VeryHigh => SIMILAR_VALUES[index_preset][0],
+        SimilarityPreset::High => SIMILAR_VALUES[index_preset][1],
+        SimilarityPreset::Medium => SIMILAR_VALUES[index_preset][2],
+        SimilarityPreset::Small => SIMILAR_VALUES[index_preset][3],
+        SimilarityPreset::VerySmall => SIMILAR_VALUES[index_preset][4],
+        SimilarityPreset::Minimal => SIMILAR_VALUES[index_preset][5],
         SimilarityPreset::None => panic!(""),
     }
 }
@@ -1223,7 +1313,6 @@ fn convert_algorithm_to_string(hash_alg: &HashAlg) -> String {
         HashAlg::Blockhash => "Blockhash",
         HashAlg::VertGradient => "VertGradient",
         HashAlg::DoubleGradient => "DoubleGradient",
-        HashAlg::__Nonexhaustive => panic!(),
     }
     .to_string()
 }
@@ -1265,6 +1354,50 @@ pub fn test_image_conversion_speed() {
                 },
                 e
             );
+        }
+    }
+}
+
+#[allow(dead_code)]
+// Function to validate if after first check there are any duplicated entries
+// E.g. /a.jpg is used also as master and similar image which is forbidden, because may
+// cause accidentally delete more pictures that user wanted
+fn debug_check_for_duplicated_things(
+    hashes_parents: HashMap<&Vec<u8>, u32>,
+    hashes_similarity: HashMap<&Vec<u8>, (&Vec<u8>, u32)>,
+    all_hashed_images: HashMap<Vec<u8>, Vec<FileEntry>>,
+    numm: &str,
+) {
+    let mut hashmap_hashes: HashSet<_> = Default::default();
+    let mut hashmap_names: HashSet<_> = Default::default();
+    for (hash, number_of_children) in &hashes_parents {
+        if *number_of_children > 0 {
+            if hashmap_hashes.contains(*hash) {
+                println!("------1--HASH--{}  {:?}", numm, all_hashed_images.get(*hash).unwrap());
+            }
+            hashmap_hashes.insert(hash.to_vec());
+
+            for i in all_hashed_images.get(*hash).unwrap() {
+                let name = i.path.to_string_lossy().to_string();
+                if hashmap_names.contains(&name) {
+                    println!("------1--NAME--{}  {:?}", numm, name);
+                }
+                hashmap_names.insert(name);
+            }
+        }
+    }
+    for hash in hashes_similarity.keys() {
+        if hashmap_hashes.contains(*hash) {
+            println!("------2--HASH--{}  {:?}", numm, all_hashed_images.get(*hash).unwrap());
+        }
+        hashmap_hashes.insert(hash.to_vec());
+
+        for i in all_hashed_images.get(*hash).unwrap() {
+            let name = i.path.to_string_lossy().to_string();
+            if hashmap_names.contains(&name) {
+                println!("------2--NAME--{}  {:?}", numm, name);
+            }
+            hashmap_names.insert(name);
         }
     }
 }

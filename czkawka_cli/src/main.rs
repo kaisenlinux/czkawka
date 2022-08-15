@@ -1,19 +1,22 @@
+#![allow(clippy::needless_late_init)]
+
 use std::process;
 
-use structopt::StructOpt;
+use clap::Parser;
 
 use commands::Commands;
+use czkawka_core::big_file::SearchMode;
 #[allow(unused_imports)] // It is used in release for print_results().
 use czkawka_core::common_traits::*;
 use czkawka_core::similar_images::test_image_conversion_speed;
 use czkawka_core::{
+    bad_extensions::BadExtensions,
     big_file::{self, BigFile},
     broken_files::{self, BrokenFiles},
     duplicate::DuplicateFinder,
     empty_files::{self, EmptyFiles},
     empty_folder::EmptyFolder,
-    invalid_symlinks,
-    invalid_symlinks::InvalidSymlinks,
+    invalid_symlinks::{self, InvalidSymlinks},
     same_music::SameMusic,
     similar_images::{return_similarity_from_similarity_preset, SimilarImages},
     similar_videos::SimilarVideos,
@@ -22,6 +25,7 @@ use czkawka_core::{
 
 mod commands;
 
+//noinspection ALL
 fn main() {
     let command = Commands::from_args();
 
@@ -42,8 +46,11 @@ fn main() {
             hash_type,
             file_to_save,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
             allow_hard_links,
             dryrun,
+            case_sensitive_name_comparison,
         } => {
             let mut df = DuplicateFinder::new();
 
@@ -58,8 +65,11 @@ fn main() {
             df.set_delete_method(delete_method);
             df.set_hash_type(hash_type);
             df.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            df.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
             df.set_ignore_hard_links(!allow_hard_links.allow_hard_links);
             df.set_dryrun(dryrun.dryrun);
+            df.set_case_sensitive_name_comparison(case_sensitive_name_comparison.case_sensitive_name_comparison);
 
             df.find_duplicates(None, None);
 
@@ -80,6 +90,8 @@ fn main() {
             file_to_save,
             excluded_directories,
             excluded_items,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
         } => {
             let mut ef = EmptyFolder::new();
 
@@ -87,6 +99,8 @@ fn main() {
             ef.set_excluded_directory(excluded_directories.excluded_directories);
             ef.set_excluded_items(excluded_items.excluded_items);
             ef.set_delete_folder(delete_folders);
+            #[cfg(target_family = "unix")]
+            ef.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
 
             ef.find_empty_folders(None, None);
 
@@ -109,7 +123,10 @@ fn main() {
             number_of_files,
             file_to_save,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
             delete_files,
+            smallest_mode,
         } => {
             let mut bf = BigFile::new();
 
@@ -119,8 +136,13 @@ fn main() {
             bf.set_allowed_extensions(allowed_extensions.allowed_extensions.join(","));
             bf.set_number_of_files_to_check(number_of_files);
             bf.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            bf.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
             if delete_files {
                 bf.set_delete_method(big_file::DeleteMethod::Delete);
+            }
+            if smallest_mode {
+                bf.set_search_mode(SearchMode::SmallestFiles);
             }
 
             bf.find_big_files(None, None);
@@ -144,6 +166,8 @@ fn main() {
             delete_files,
             file_to_save,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
         } => {
             let mut ef = EmptyFiles::new();
 
@@ -152,6 +176,8 @@ fn main() {
             ef.set_excluded_items(excluded_items.excluded_items);
             ef.set_allowed_extensions(allowed_extensions.allowed_extensions.join(","));
             ef.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            ef.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
 
             if delete_files {
                 ef.set_delete_method(empty_files::DeleteMethod::Delete);
@@ -174,6 +200,8 @@ fn main() {
             directories,
             excluded_directories,
             excluded_items,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
             delete_files,
             file_to_save,
             not_recursive,
@@ -184,6 +212,8 @@ fn main() {
             tf.set_excluded_directory(excluded_directories.excluded_directories);
             tf.set_excluded_items(excluded_items.excluded_items);
             tf.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            tf.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
 
             if delete_files {
                 tf.set_delete_method(temporary::DeleteMethod::Delete);
@@ -211,6 +241,8 @@ fn main() {
             maximal_file_size,
             similarity_preset,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
             hash_alg,
             image_filter,
             hash_size,
@@ -223,6 +255,8 @@ fn main() {
             sf.set_minimal_file_size(minimal_file_size);
             sf.set_maximal_file_size(maximal_file_size);
             sf.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            sf.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
             sf.set_image_filter(image_filter);
             sf.set_hash_alg(hash_alg);
             sf.set_hash_size(hash_size);
@@ -249,6 +283,8 @@ fn main() {
             // delete_files,
             file_to_save,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
             minimal_file_size,
             maximal_file_size,
             music_similarity,
@@ -261,6 +297,8 @@ fn main() {
             mf.set_minimal_file_size(minimal_file_size);
             mf.set_maximal_file_size(maximal_file_size);
             mf.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            mf.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
             mf.set_music_similarity(music_similarity);
 
             // if delete_files {
@@ -287,6 +325,8 @@ fn main() {
             allowed_extensions,
             file_to_save,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
             delete_files,
         } => {
             let mut ifs = InvalidSymlinks::new();
@@ -296,6 +336,8 @@ fn main() {
             ifs.set_excluded_items(excluded_items.excluded_items);
             ifs.set_allowed_extensions(allowed_extensions.allowed_extensions.join(","));
             ifs.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            ifs.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
             if delete_files {
                 ifs.set_delete_method(invalid_symlinks::DeleteMethod::Delete);
             }
@@ -321,6 +363,8 @@ fn main() {
             delete_files,
             file_to_save,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
         } => {
             let mut br = BrokenFiles::new();
 
@@ -329,6 +373,8 @@ fn main() {
             br.set_excluded_items(excluded_items.excluded_items);
             br.set_allowed_extensions(allowed_extensions.allowed_extensions.join(","));
             br.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            br.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
 
             if delete_files {
                 br.set_delete_method(broken_files::DeleteMethod::Delete);
@@ -353,6 +399,8 @@ fn main() {
             excluded_items,
             file_to_save,
             not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
             tolerance,
             minimal_file_size,
             maximal_file_size,
@@ -365,6 +413,8 @@ fn main() {
             vr.set_excluded_items(excluded_items.excluded_items);
             vr.set_allowed_extensions(allowed_extensions.allowed_extensions.join(","));
             vr.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            vr.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
             vr.set_minimal_file_size(minimal_file_size);
             vr.set_maximal_file_size(maximal_file_size);
             vr.set_tolerance(tolerance);
@@ -382,12 +432,41 @@ fn main() {
             vr.print_results();
             vr.get_text_messages().print_messages();
         }
-        Commands::Tester { test_image } => {
-            if test_image {
-                test_image_conversion_speed();
-            } else {
-                println!("At least one test should be choosen!");
+        Commands::BadExtensions {
+            directories,
+            excluded_directories,
+            excluded_items,
+            file_to_save,
+            not_recursive,
+            #[cfg(target_family = "unix")]
+            exclude_other_filesystems,
+            allowed_extensions,
+        } => {
+            let mut be = BadExtensions::new();
+
+            be.set_included_directory(directories.directories);
+            be.set_excluded_directory(excluded_directories.excluded_directories);
+            be.set_excluded_items(excluded_items.excluded_items);
+            be.set_allowed_extensions(allowed_extensions.allowed_extensions.join(","));
+            be.set_recursive_search(!not_recursive.not_recursive);
+            #[cfg(target_family = "unix")]
+            be.set_exclude_other_filesystems(exclude_other_filesystems.exclude_other_filesystems);
+
+            if let Some(file_name) = file_to_save.file_name() {
+                if !be.save_results_to_file(file_name) {
+                    be.get_text_messages().print_messages();
+                    process::exit(1);
+                }
             }
+
+            be.find_bad_extensions_files(None, None);
+
+            #[cfg(not(debug_assertions))] // This will show too much probably unnecessary data to debug, comment line only if needed
+            be.print_results();
+            be.get_text_messages().print_messages();
+        }
+        Commands::Tester {} => {
+            test_image_conversion_speed();
         }
     }
 }

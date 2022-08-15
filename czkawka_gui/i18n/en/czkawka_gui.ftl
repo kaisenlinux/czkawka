@@ -11,15 +11,22 @@ general_close_button = Close
 # Main window
 music_title_checkbox = Title
 music_artist_checkbox = Artist
-music_album_title_checkbox = Album Title
-music_album_artist_checkbox = Album Artist
 music_year_checkbox = Year
+music_bitrate_checkbox = Bitrate
+music_genre_checkbox = Genre
+music_length_checkbox = Length
 music_comparison_checkbox = Approximate Comparison
 
 music_comparison_checkbox_tooltip =
         It searches for similar music files using AI, which uses machine learning to remove parentheses from a phrase. For example, with this option enabled, the files in question will be considered duplicates:
         
         Świędziżłób     ---     Świędziżłób (Remix Lato 2021)
+
+duplicate_case_sensitive_name = Case Sensitive
+duplicate_case_sensitive_name_tooltip =
+        When enabled, group only records when they have exactly same name e.g. Żołd <-> Żołd
+
+        Disabling such option will group names without checking if each letter is same size e.g. żoŁD <-> Żołd
 
 duplicate_mode_name_combo_box = Name
 duplicate_mode_size_combo_box = Size
@@ -43,24 +50,35 @@ duplicate_check_method_tooltip =
 
         Hash - Finds files which have the same content. This mode hashes the file and later compares this hash to find duplicates. This mode is the safest way to find duplicates. App heavily uses cache, so second and further scans of the same data should be a lot of faster than the first. 
 
-image_hash_size_tooltip = 
-        Czkawka offers changing the size of the generated hash for each image. A bigger hash size enables finding images with a lower amount of differences between images, but it is also slightly slower to use.
-        
-        Default value for hash is 8 bytes, which allows finding both very similar and different images. 16 byte and 32 byte hashes should be used only for nearly identical images. 64 byte hash shouldn't be used, except in situations where you need to find really small differences.
+image_hash_size_tooltip =
+        Each checked image produce special hash which can be compared with every other, and small difference between them means that this images are similar.
+
+        8 hash size is quite good to find images that are only little similar to original. With bigger set of images(>1000) will produce big amount of false positives, so I recommend to use for such amount bigger hash size.
+
+        16 is default hash size which is quite good compromise between finding even a little similar images and having small amount of hash collisions.
+
+        32 and 64 hashes finds only very similar images, but almost should not have any false positives(maybe except some images with alpha channel).
 
 image_resize_filter_tooltip = 
-        To compute hash of image, library must first resize it. Depend on chosen algorithm, resulted image will looks little different. The fastest algorithm to use, but also one which gives the worst results is Nearest.
+        To compute hash of image, library must first resize it.
+
+        Depend on chosen algorithm, resulted image used to calculate hash will may looks little different.
+
+        The fastest algorithm to use, but also one which gives the worst results is Nearest, it is enabled by default, because with 16x16 hash size, lower quality it is not really visible.
+
+        With 8x8 hash size is recommended to use different algorithm than Nearest, to have better groups of images.
 
 image_hash_alg_tooltip = 
-        Users can choose from one of many algorithms of calculating the hash. Each has both strong and weaker points and will sometimes give better and sometimes worse results for different images. So, to determine the best one for you, manual testing is required.
+        Users can choose from one of many algorithms of calculating the hash.
 
-main_notebook_image_fast_compare = Fast compare
-main_notebook_image_fast_compare_tooltip =
-        Speedup searching and comparing hashes.
+        Each has both strong and weaker points and will sometimes give better and sometimes worse results for different images.
 
-        As opposed to normal mode - where each hash is compared to each other x times (where x is the similarity the user chose) - in this mode, exactly one comparison will be used.
+        So, to determine the best one for you, manual testing is required.
 
-        This option is recommended when comparing >10000 images with non 0 (Very High) similarity.
+big_files_mode_combobox_tooltip = Allows to search for smallest/biggest files
+big_files_mode_label = Checked files
+big_files_mode_smallest_combo_box = The Smallest
+big_files_mode_biggest_combo_box = The Biggest
 
 main_notebook_duplicates = Duplicate Files
 main_notebook_empty_directories = Empty Directories
@@ -72,6 +90,7 @@ main_notebook_similar_videos = Similar Videos
 main_notebook_same_music = Music Duplicates
 main_notebook_symlinks = Invalid Symlinks
 main_notebook_broken_files = Broken Files
+main_notebook_bad_extensions = Bad Extensions
 
 main_tree_view_column_file_name = File Name
 main_tree_view_column_folder_name = Folder Name
@@ -83,12 +102,15 @@ main_tree_view_column_dimensions = Dimensions
 main_tree_view_column_title = Title
 main_tree_view_column_artist = Artist
 main_tree_view_column_year = Year
-main_tree_view_column_album_title = Album Title
-main_tree_view_column_album_artist = Album Artist
+main_tree_view_column_bitrate = Bitrate
+main_tree_view_column_length = Length
+main_tree_view_column_genre = Genre
 main_tree_view_column_symlink_file_name = Symlink File Name
-main_tree_view_column_symlink_folder = Symlnik Folder
+main_tree_view_column_symlink_folder = Symlink Folder
 main_tree_view_column_destination_path = Destination Path
 main_tree_view_column_type_of_error = Type Of Error
+main_tree_view_column_current_extension = Current Extension
+main_tree_view_column_proper_extensions = Proper Extension
 
 main_label_check_method = Check method
 main_label_hash_type = Hash type
@@ -99,6 +121,11 @@ main_label_max_size = Max
 main_label_shown_files = Number of shown files
 main_label_resize_algorithm = Resize algorithm
 main_label_similarity = Similarity{"   "}
+
+main_check_box_broken_files_audio = Audio
+main_check_box_broken_files_pdf = Pdf
+main_check_box_broken_files_archive = Archive
+main_check_box_broken_files_image = Image
 
 check_button_general_same_size = Ignore same size
 check_button_general_same_size_tooltip = Ignore from results, files which have identical size - usually this are 1:1 duplicates
@@ -119,10 +146,20 @@ upper_manual_add_excluded_button = Manual Add
 upper_add_excluded_button = Add
 upper_remove_excluded_button =  Remove
 
-upper_manual_add_included_button_tooltip = Add directory name to search by hand.
+upper_manual_add_included_button_tooltip =
+        Add directory name to search by hand.
+
+        To add multiple paths at once, separate them by ;
+
+        /home/roman;/home/rozkaz will add two directories /home/roman and /home/rozkaz
 upper_add_included_button_tooltip = Add new directory to search.
 upper_remove_included_button_tooltip =  Delete directory from search.
-upper_manual_add_excluded_button_tooltip = Add excluded directory name by hand.
+upper_manual_add_excluded_button_tooltip =
+        Add excluded directory name by hand.
+
+        To add multiple paths at once, separate them by ;
+
+        /home/roman;/home/krokiet will add two directories /home/roman and /home/keokiet
 upper_add_excluded_button_tooltip = Add directory to be excluded in search.
 upper_remove_excluded_button_tooltip = Delete directory from excluded.
 
@@ -180,6 +217,11 @@ popover_custom_regex_check_button_entry_tooltip =
 
         This uses the default Rust regex implementation. You can read more about it here: https://docs.rs/regex.
 
+popover_custom_case_sensitive_check_button_tooltip =
+        Enables case-sensitive detection.
+
+        When disabled /home/* finds both /HoMe/roman and /home/roman.
+
 popover_custom_not_all_check_button_tooltip = 
         Prevents selecting all records in group.
 
@@ -190,6 +232,7 @@ popover_custom_not_all_check_button_tooltip =
 popover_custom_regex_path_label = Path
 popover_custom_regex_name_label = Name
 popover_custom_regex_regex_label = Regex Path + Name
+popover_custom_case_sensitive_check_button = Case sensitive
 popover_custom_all_in_group_label = Don't select all records in group
 
 popover_custom_mode_unselect = Unselect Custom
@@ -230,12 +273,13 @@ bottom_show_upper_notebook_tooltip = Show/Hide upper notebook panel.
 
 # Progress Window
 progress_stop_button = Stop
+progress_stop_additional_message = Stop requested
 
 # About Window
 about_repository_button_tooltip = Link to repository page with source code.
 about_donation_button_tooltip = Link to donation page.
 about_instruction_button_tooltip = Link to instruction page.
-about_translation_button_tooltip = Link to Crowdin page with app translations. Officially Polish and English are supported, but any help with other language will be appreciated.
+about_translation_button_tooltip = Link to Crowdin page with app translations. Officially Polish and English are supported.
 
 about_repository_button = Repository
 about_donation_button = Donation
@@ -248,6 +292,12 @@ header_about_button_tooltip = Opens dialog with info about app.
 
 # Settings
 ## General
+settings_ignore_other_filesystems = Ignore other filesystems(only Linux)
+settings_ignore_other_filesystems_tooltip =
+        ignores files that are not in the same file system as searched directories.
+
+        Works same like -xdev option in find command on Linux
+
 settings_save_at_exit_button_tooltip = Save configuration to file when closing app.
 settings_load_at_start_button_tooltip = 
         Load configuration from file when opening app.
@@ -365,10 +415,12 @@ compute_found_videos = Found { $number_files } similar videos in { $number_group
 compute_found_music = Found { $number_files } similar music files in { $number_groups } groups
 compute_found_invalid_symlinks = Found { $number_files } invalid symlinks
 compute_found_broken_files = Found { $number_files } broken files
+compute_found_bad_extensions = Found { $number_files } files with invalid extensions
 
 # Progress window
 progress_scanning_general_file = Scanning {$file_number} file
 
+progress_scanning_extension_of_files = Checking extension of {$file_checked}/{$all_files} file
 progress_scanning_broken_files = Checking {$file_checked}/{$all_files} file
 progress_scanning_video = Hashing of {$file_checked}/{$all_files} video
 progress_scanning_image = Hashing of {$file_checked}/{$all_files} image
@@ -411,6 +463,7 @@ invalid_symlink_infinite_recursion = Infinite recursion
 invalid_symlink_non_existent_destination = Non-existent destination file
 
 # Other
+selected_all_reference_folders = Cannot start search, when all directories are set as reference folders
 searching_for_data = Searching data, it may take a while, please wait...
 text_view_messages = MESSAGES
 text_view_warnings = WARNINGS
@@ -449,6 +502,7 @@ move_stats = Properly moved {$num_files}/{$all_files} items
 save_results_to_file = Saved results to file {$name}
 
 search_not_choosing_any_music = ERROR: You must select at least one checkbox with music searching types.
+search_not_choosing_any_broken_files = ERROR: You must select at least one checkbox with type of checked broken files.
 
 include_folders_dialog_title = Folders to include
 exclude_folders_dialog_title = Folders to exclude
@@ -465,11 +519,8 @@ cache_clear_message_label_3 = This may slightly speedup loading/saving to cache.
 cache_clear_message_label_4 = WARNING: Operation will remove all cached data from unplugged external drives. So each hash will need to be regenerated.
 
 # Show preview
-preview_temporary_file = Failed to open temporary image file {$name}, reason {$reason}.
-preview_0_size = Cannot create preview of image {$name}, with 0 width or height.
-preview_temporary_image_save = Failed to save temporary image file to {$name}, reason {$reason}.
-preview_temporary_image_remove = Failed to delete temporary image file {$name}, reason {$reason}.
-preview_failed_to_create_cache_dir = Failed to create dir {$name} needed by image preview, reason {$reason}.
+preview_image_resize_failure = Failed to resize image {$name}.
+preview_image_opening_failure = Failed to open image {$name}, reason {$reason}
 
 # Compare images (L is short Left, R is short Right - they can't take too much space)
 compare_groups_number = Group { $current_group }/{ $all_groups } ({ $images_in_group } images)

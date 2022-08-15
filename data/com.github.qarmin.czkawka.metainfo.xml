@@ -19,12 +19,12 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="4.0.0" date="2021-01-20"/>
+    <release version="5.0.1" date="2022-08-03"/>
   </releases>
   <content_rating type="oars-1.0"/>
   <developer_name>Rafał Mikrut</developer_name>
   <url type="homepage">https://github.com/qarmin/czkawka</url>
   <url type="bugtracker">https://github.com/qarmin/czkawka/issues</url>
   <url type="donation">https://github.com/sponsors/qarmin</url>
-  <url type="translation">https://crowdin.com/project/czkawka</url>
+  <url type="translate">https://crowdin.com/project/czkawka</url>
 </component>

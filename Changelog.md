@@ -1,3 +1,50 @@
+## Version 5.0.1 - 03.08.2022r
+- Fixed problem with removing ending slash with empty disk window path - [975](https://github.com/qarmin/czkawka/commit/97563a7b2a70fb5fcf6463f28069e6ea3b0ff5c2)
+- Added to CLI bad extensions mode - [#795](https://github.com/qarmin/czkawka/pull/795)
+- Restore default sorting method in CLI where finding biggest files - [5d7](https://github.com/qarmin/czkawka/commit/5d79dc7ccfee6d5426e37c4e6a860fa555c5927a)
+- Added tests to CI - [#791](https://github.com/qarmin/czkawka/pull/791)
+- Show error message when all directories are set as reference folders - [#795](https://github.com/qarmin/czkawka/pull/795)
+- Added more info about new requirements on Linux - [#795](https://github.com/qarmin/czkawka/pull/795)
+
+## Version 5.0.0 - 28.07.2022r
+- GUI ported to use GTK 4 - [#466](https://github.com/qarmin/czkawka/pull/466)
+- Use multithreading and improved algorithm to compare image hashes - [#762](https://github.com/qarmin/czkawka/pull/762)
+- Resize preview with window - [#466](https://github.com/qarmin/czkawka/pull/466)
+- Fix removing only one item from list view - [#466](https://github.com/qarmin/czkawka/pull/466)
+- Fix showing help command in duplicate CLI mode - [#720](https://github.com/qarmin/czkawka/pull/720)
+- Fix freeze when not choosing any tag in similar music mode - [#732](https://github.com/qarmin/czkawka/pull/732)
+- Fix preview of files with non-lowercase extensions - [#694](https://github.com/qarmin/czkawka/pull/694) 
+- Read more tags from music files - [#705](https://github.com/qarmin/czkawka/pull/705)
+- Improve checking for invalid extensions - [#705](https://github.com/qarmin/czkawka/pull/705), [#747](https://github.com/qarmin/czkawka/pull/747), [#749](https://github.com/qarmin/czkawka/pull/749)
+- Support for finding invalid PDF files - [#705](https://github.com/qarmin/czkawka/pull/705)
+- Re-enable checking for broken music files(`libasound.so.2` no longer needed) - [#705](https://github.com/qarmin/czkawka/pull/705)
+- Fix disabled ui when using invalid settings in similar music - [#740](https://github.com/qarmin/czkawka/pull/740)
+- Speedup searching for invalid extensions - [#740](https://github.com/qarmin/czkawka/pull/740)
+- Support for finding the smallest files - [#741](https://github.com/qarmin/czkawka/pull/741)
+- Improved Windows CI - [#749](https://github.com/qarmin/czkawka/pull/749)
+- Ability to check for broken files by types - [#749](https://github.com/qarmin/czkawka/pull/749)
+- Add heif and Webp files support - [#750](https://github.com/qarmin/czkawka/pull/750)
+- Use in CLI Clap library instead StructOpt - [#759](https://github.com/qarmin/czkawka/pull/759)
+- Multiple directories can be added via Manual Add button - [#782](https://github.com/qarmin/czkawka/pull/782)
+- Option to exclude files from other filesystems in GUI(Linux) - [#776](https://github.com/qarmin/czkawka/pull/776)
+
+## Version 4.1.0 - 24.04.2022r
+- New mode - finding files whose content not match with their extension - [#678](https://github.com/qarmin/czkawka/pull/678)
+- Builtin icons - no more invalid, theme/OS dependant icons - [#659](https://github.com/qarmin/czkawka/pull/659)
+- Big(usually 2x) speedup of showing previews of images(both previews in scan and compare window) - [#660](https://github.com/qarmin/czkawka/pull/660)
+- Fix selecting records by custom selection popup - [#632](https://github.com/qarmin/czkawka/pull/632)
+- Support more tags when comparing music files - [#590](https://github.com/qarmin/czkawka/pull/590)
+- Fix not proper selecting path - [#656](https://github.com/qarmin/czkawka/pull/656)
+- No more popups during scan for similar videos on Windows - [#656](https://github.com/qarmin/czkawka/pull/656) - external change [4056](https://github.com/Farmadupe/ffmpeg_cmdline_utils/commit/405687514f9d9e8984cbe2547c53e85b71e08b27)
+- Custom selecting is now case-insensitive by default - [#657](https://github.com/qarmin/czkawka/pull/657)
+- Better approximate comparison of tags - [#641](https://github.com/qarmin/czkawka/pull/641)
+- Fix search problem due accumulated stop events - [#623](https://github.com/qarmin/czkawka/pull/623)
+- Option to ignore other filesystems in Unix OS(for now only in CLI) - [#673](https://github.com/qarmin/czkawka/pull/673)
+- Fix file hardlinking on Windows - [#668](https://github.com/qarmin/czkawka/pull/668)
+- Support for case-insensitive name grouping of files - [#669](https://github.com/qarmin/czkawka/pull/669)
+- Directories for search GUI can be passed by CLI - [#677](https://github.com/qarmin/czkawka/pull/677)
+- Prevent from getting non respond app notification from display servers - [#625](https://github.com/qarmin/czkawka/pull/625)
+
 ## Version 4.0.0 - 20.01.2022r
 - Multithreading support for collecting files to check(2/3x speedup on 4 thread processor and SSD) - [#502](https://github.com/qarmin/czkawka/pull/502), [#504](https://github.com/qarmin/czkawka/pull/504)
 - Add multiple translations - Polish, Italian, French, German, Russian ... - [#469](https://github.com/qarmin/czkawka/pull/469), [#508](https://github.com/qarmin/czkawka/pull/508), [5be](https://github.com/qarmin/czkawka/commit/5be801e76395855f07ab1da43cdbb8bd0b843834)
@@ -8,7 +55,7 @@
 - Change minimal supported OS to Ubuntu 20.04(needed by GTK) - [#468](https://github.com/qarmin/czkawka/pull/468)
 - Increased performance by avoiding creating unnecessary image previews - [#468](https://github.com/qarmin/czkawka/pull/468)
 - Improved performance due caching hash of broken/not supported images/videos = [#471](https://github.com/qarmin/czkawka/pull/471)
-- Option to not remove cache from non existent files(e.g. from unplugged pendrive) - [#472](https://github.com/qarmin/czkawka/pull/472)
+- Option to not remove cache from non-existent files(e.g. from unplugged pendrive) - [#472](https://github.com/qarmin/czkawka/pull/472)
 - Add multiple tooltips with helpful messages - [#472](https://github.com/qarmin/czkawka/pull/472)
 - Allow caching prehash - [#477](https://github.com/qarmin/czkawka/pull/477)
 - Improve custom selecting of records(allows to use Rust regex) - [#489](https://github.com/qarmin/czkawka/pull/478)
@@ -33,7 +80,7 @@
 - Add additional info to printed errors [#446](https://github.com/qarmin/czkawka/pull/446) 
 - Add support for multiple image filters, hashes and sizes in similar images tool [#447](https://github.com/qarmin/czkawka/pull/447), [#448](https://github.com/qarmin/czkawka/pull/448)
 - Button to move files/folders to provided location [#449](https://github.com/qarmin/czkawka/pull/449)
-- Add non clickable button to fix white theme [#450](https://github.com/qarmin/czkawka/pull/450)
+- Add non-clickable button to fix white theme [#450](https://github.com/qarmin/czkawka/pull/450)
 - Fixed freeze when opening in same thread file/folder [#448](https://github.com/qarmin/czkawka/pull/448)
 - Tool to check performance of different image filters and hash types and sizes [#447](https://github.com/qarmin/czkawka/pull/447) 
 - Add scheduled CI and pin it to support Rust 1.53.0 [7bb](https://github.com/qarmin/czkawka/commit/7bbdf742739a513b80d0cc06ba61dfafec976b23), [#431](https://github.com/qarmin/czkawka/pull/431)
@@ -93,7 +140,7 @@
 - Add support for CRC32 and XXH3 hash - [#243](https://github.com/qarmin/czkawka/pull/243)
 - Add delete method to replace duplicate files with hard links - [#236](https://github.com/qarmin/czkawka/pull/236)
 - Add checking for broken music opt-in - [#249](https://github.com/qarmin/czkawka/pull/249)
-- Allow to save to files similar images results - [10156ccfd3](https://github.com/qarmin/czkawka/commit/10156ccfd3ba880d26d4bbad1e025b0050d7753b)
+- Allow to save to file similar images results - [10156ccfd3](https://github.com/qarmin/czkawka/commit/10156ccfd3ba880d26d4bbad1e025b0050d7753b)
 - Keep original file if replacing duplicate with hardlink fails - [#256](https://github.com/qarmin/czkawka/pull/256)
 - Fix Windows theme - [#265](https://github.com/qarmin/czkawka/pull/265)
 - Windows taskbar progress support - [#264](https://github.com/qarmin/czkawka/pull/264)
@@ -139,7 +186,7 @@ This version is only needed to test flatpak build
 - Add support for delete button - [#159](https://github.com/qarmin/czkawka/pull/159)
 - Allow to select multiple entries in File Chooser - [#154](https://github.com/qarmin/czkawka/pull/154)
 - Add cache support for similar images - [#139](https://github.com/qarmin/czkawka/pull/139)
-- Add selecting images with it's size - [#138](https://github.com/qarmin/czkawka/pull/138)
+- Add selecting images with its size - [#138](https://github.com/qarmin/czkawka/pull/138)
 - Modernize popovers code and simplify later changes - [#137](https://github.com/qarmin/czkawka/pull/137)
 
 ## Version 2.0.0 - 23.12.2020r
@@ -183,7 +230,7 @@ This version is only needed to test flatpak build
 
 ## Version 1.3.0 - 02.11.2020r
 - Appimage support - [#77](https://github.com/qarmin/czkawka/pull/77)
-- Removed warnings about non existend excluded directories - [#79](https://github.com/qarmin/czkawka/pull/79)
+- Removed warnings about non-existed excluded directories - [#79](https://github.com/qarmin/czkawka/pull/79)
 - Updated README - [8ec](https://github.com/qarmin/czkawka/commit/8ecde0fc9adb3e6cedf432c4ba749e698b645a7a)
 - Added pre hash support(speedup for searching big duplicates) - [#83](https://github.com/qarmin/czkawka/pull/83)
 - Support for searching duplicates by file name - [#84](https://github.com/qarmin/czkawka/pull/84)
@@ -217,7 +264,7 @@ This version is only needed to test flatpak build
 
 ## Version 1.0.1 - 06.10.2020r
 - Replaced default argument parser with StructOpt [#37](https://github.com/qarmin/czkawka/pull/37)
-- Added all(except MacOS GTK build) builds to CI where can be freely downloaded [#41](https://github.com/qarmin/czkawka/pull/41) [#39](https://github.com/qarmin/czkawka/pull/39)
+- Added all(except macOS GTK build) builds to CI where can be freely downloaded [#41](https://github.com/qarmin/czkawka/pull/41) [#39](https://github.com/qarmin/czkawka/pull/39)
 - App can be downloaded also from Arch AUR and Cargo [#36](https://github.com/qarmin/czkawka/pull/36)
 - Fixed crash with invalid file modification date [#33](https://github.com/qarmin/czkawka/issues/33)
 - Upper tabs can hide and show when this is necessary [#38](https://github.com/qarmin/czkawka/pull/38)
@@ -268,11 +315,11 @@ This version is only needed to test flatpak build
 - Basic search in GTK
 - Cleaned core from println
 - Core functions doesn't use now process::exit(everything is done with help of messages/errors/warnings)
-- Added support for non recursive search
+- Added support for non-recursive search
 - Improved finding number and size of duplicated files
 - Saving results to file
 - Print how much data was read by duplicate finder(debug only)
-- Added Github CI
+- Added GitHub CI
 - Only debug build prints debug information's
 - Clean code
 - Add basic idea config to misc folder

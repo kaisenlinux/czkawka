@@ -1,8 +1,9 @@
 [package]
 name = "czkawka_core"
-version = "4.0.0"
+version = "5.0.1"
 authors = ["Rafał Mikrut <mikrutrafal@protonmail.com>"]
-edition = "2018"
+edition = "2021"
+rust-version = "1.60"
 description = "Core of Czkawka app"
 license = "MIT"
 homepage = "https://github.com/qarmin/czkawka"
@@ -11,56 +12,66 @@ repository = "https://github.com/qarmin/czkawka"
 
 [dependencies]
 humansize = "1.1.1"
-rayon = "1.5.1"
-crossbeam-channel = "0.5.1"
+rayon = "1.5.3"
+crossbeam-channel = "0.5.6"
 
 # For saving/loading config files to specific directories
 directories-next = "2.0.0"
 
 # Needed by similar images
-img_hash = "3.2.0"
+image_hasher = "1.0.0"
 bk-tree = "0.4.0"
-image = "0.23.14"
+image = "0.24.3"
 hamming = "0.1.3"
 
 # Needed by same music
 bitflags = "1.3.2"
-audiotags = "0.2.7182"
+lofty = "0.7.3"
 
 # Futures - needed by async progress sender
-futures = "0.3.19"
+futures = "0.3.21"
 
 # Needed by broken files
-zip = "0.5.13"
-rodio = { version = "0.14.0", optional = true }
+zip = { version = "0.6.2", features = ["aes-crypto", "bzip2", "deflate", "time"], default-features = false }
+audio_checker = "0.1.0"
+pdf = "0.7.2"
 
 # Hashes for duplicate files
-blake3 = "1.2.0"
-crc32fast = "1.3.0"
-xxhash-rust = { version = "0.8.2", features = ["xxh3"] }
+blake3 = "1.3.1"
+crc32fast = "1.3.2"
+xxhash-rust = { version = "0.8.5", features = ["xxh3"] }
 
-tempfile = "3.2.0"
+tempfile = "3.3.0"
 
 # Video Duplactes
 vid_dup_finder_lib = "0.1.0"
-ffmpeg_cmdline_utils = "0.1.0"
+ffmpeg_cmdline_utils = "0.1.1"
 
 # Saving/Loading Cache
-serde = "1.0.133"
+serde = "1.0.140"
 bincode = "1.3.3"
-serde_json = "1.0.74"
+serde_json = "1.0.82"
 
 # Language
-i18n-embed = { version = "0.13", features = ["fluent-system", "desktop-requester"] }
-i18n-embed-fl = "0.6.1"
-rust-embed = "6.3.0"
-once_cell = "1.9.0"
+i18n-embed = { version = "0.13.4", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.6.4"
+rust-embed = "6.4.0"
+once_cell = "1.13.0"
 
 # Raw image files
-rawloader = "0.37.0"
-imagepipe = "0.4.0"
+rawloader = "0.37.1"
+imagepipe = "0.5.0"
+
+# Checking for invalid extensions
+mime_guess = "2.0.4"
+infer = "0.9.0"
+
+num_cpus = "1.13.1"
+
+# Heif/Heic
+libheif-rs = { version = "0.15.0", optional = true }
+anyhow = { version = "1.0.58", optional = true }
 
 [features]
 default = []
-
-broken_audio = ["rodio"]
+heif = ["dep:libheif-rs", "dep:anyhow"]

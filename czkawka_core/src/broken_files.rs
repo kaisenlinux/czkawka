@@ -10,10 +10,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, mem, panic, thread};
 
 use crossbeam_channel::Receiver;
+use pdf::PdfError;
+use pdf::PdfError::Try;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{open_cache_folder, Common, LOOP_DURATION};
+use crate::common::{create_crash_message, open_cache_folder, Common, LOOP_DURATION, PDF_FILES_EXTENSIONS};
+use crate::common::{AUDIO_FILES_EXTENSIONS, IMAGE_RS_BROKEN_FILES_EXTENSIONS, ZIP_FILES_EXTENSIONS};
 use crate::common_directory::Directories;
 use crate::common_extensions::Extensions;
 use crate::common_items::ExcludedItems;
@@ -21,7 +24,6 @@ use crate::common_messages::Messages;
 use crate::common_traits::*;
 use crate::flc;
 use crate::localizer_core::generate_translation_hashmap;
-use crate::similar_images::{AUDIO_FILES_EXTENSIONS, IMAGE_RS_BROKEN_FILES_EXTENSIONS, ZIP_FILES_EXTENSIONS};
 
 #[derive(Debug)]
 pub struct ProgressData {
@@ -46,13 +48,24 @@ pub struct FileEntry {
     pub error_string: String,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub enum TypeOfFile {
     Unknown = -1,
     Image = 0,
     ArchiveZip,
-    #[cfg(feature = "broken_audio")]
     Audio,
+    PDF,
+}
+
+bitflags! {
+    pub struct CheckedTypes : u32 {
+        const NONE = 0;
+
+        const PDF = 0b1;
+        const AUDIO = 0b10;
+        const IMAGE = 0b100;
+        const ARCHIVE = 0b1000;
+    }
 }
 
 /// Info struck with helpful information's about results
@@ -78,6 +91,7 @@ pub struct BrokenFiles {
     recursive_search: bool,
     delete_method: DeleteMethod,
     stopped_search: bool,
+    checked_types: CheckedTypes,
     use_cache: bool,
     delete_outdated_cache: bool, // TODO add this to GUI
     save_also_as_json: bool,
@@ -99,6 +113,7 @@ impl BrokenFiles {
             use_cache: true,
             delete_outdated_cache: true,
             save_also_as_json: false,
+            checked_types: CheckedTypes::PDF | CheckedTypes::AUDIO | CheckedTypes::IMAGE | CheckedTypes::ARCHIVE,
         }
     }
 
@@ -124,6 +139,10 @@ impl BrokenFiles {
         &self.broken_files
     }
 
+    pub fn set_checked_types(&mut self, checked_types: CheckedTypes) {
+        self.checked_types = checked_types;
+    }
+
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
@@ -147,6 +166,13 @@ impl BrokenFiles {
     pub fn set_recursive_search(&mut self, recursive_search: bool) {
         self.recursive_search = recursive_search;
     }
+
+    #[cfg(target_family = "unix")]
+    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
+        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
+    }
+    #[cfg(not(target_family = "unix"))]
+    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
 
     pub fn set_included_directory(&mut self, included_directory: Vec<PathBuf>) -> bool {
         self.directories.set_included_directory(included_directory, &mut self.text_messages)
@@ -262,6 +288,15 @@ impl BrokenFiles {
                                 continue 'dir;
                             }
 
+                            #[cfg(target_family = "unix")]
+                            if self.directories.exclude_other_filesystems() {
+                                match self.directories.is_on_other_filesystems(&next_folder) {
+                                    Ok(true) => continue 'dir,
+                                    Err(e) => warnings.push(e.to_string()),
+                                    _ => (),
+                                }
+                            }
+
                             dir_result.push(next_folder);
                         } else if metadata.is_file() {
                             atomic_file_counter.fetch_add(1, Ordering::Relaxed);
@@ -282,8 +317,12 @@ impl BrokenFiles {
                                 continue 'dir;
                             }
 
-                            let type_of_file = check_extension_avaibility(&file_name_lowercase);
+                            let type_of_file = check_extension_availability(&file_name_lowercase);
                             if type_of_file == TypeOfFile::Unknown {
+                                continue 'dir;
+                            }
+
+                            if !check_extension_allowed(&type_of_file, &self.checked_types) {
                                 continue 'dir;
                             }
 
@@ -352,6 +391,8 @@ impl BrokenFiles {
 
         let mut records_already_cached: BTreeMap<String, FileEntry> = Default::default();
         let mut non_cached_files_to_check: BTreeMap<String, FileEntry> = Default::default();
+        let mut files_to_check = Default::default();
+        mem::swap(&mut self.files_to_check, &mut files_to_check);
 
         if self.use_cache {
             loaded_hash_map = match load_cache_from_file(&mut self.text_messages, self.delete_outdated_cache) {
@@ -359,25 +400,27 @@ impl BrokenFiles {
                 None => Default::default(),
             };
 
-            for (name, file_entry) in &self.files_to_check {
+            for (name, file_entry) in files_to_check {
+                let checked_extension = check_extension_allowed(&file_entry.type_of_file, &self.checked_types); // Only broken
+
                 #[allow(clippy::if_same_then_else)]
-                if !loaded_hash_map.contains_key(name) {
-                    // If loaded data doesn't contains current image info
-                    non_cached_files_to_check.insert(name.clone(), file_entry.clone());
-                } else if file_entry.size != loaded_hash_map.get(name).unwrap().size || file_entry.modified_date != loaded_hash_map.get(name).unwrap().modified_date {
+                if checked_extension && !loaded_hash_map.contains_key(&name) {
+                    // If loaded data doesn't contains current info
+                    non_cached_files_to_check.insert(name, file_entry.clone());
+                } else if checked_extension && file_entry.size != loaded_hash_map.get(&name).unwrap().size
+                    || file_entry.modified_date != loaded_hash_map.get(&name).unwrap().modified_date
+                {
                     // When size or modification date of image changed, then it is clear that is different image
-                    non_cached_files_to_check.insert(name.clone(), file_entry.clone());
+                    non_cached_files_to_check.insert(name, file_entry);
                 } else {
                     // Checking may be omitted when already there is entry with same size and modification date
-                    records_already_cached.insert(name.clone(), loaded_hash_map.get(name).unwrap().clone());
+                    records_already_cached.insert(name.clone(), loaded_hash_map.get(&name).unwrap().clone());
                 }
             }
         } else {
             loaded_hash_map = Default::default();
-            mem::swap(&mut self.files_to_check, &mut non_cached_files_to_check);
+            non_cached_files_to_check = files_to_check;
         }
-
-        let check_was_breaked = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
 
         //// PROGRESS THREAD START
         let progress_thread_run = Arc::new(AtomicBool::new(true));
@@ -411,60 +454,102 @@ impl BrokenFiles {
             .map(|(_, mut file_entry)| {
                 atomic_file_counter.fetch_add(1, Ordering::Relaxed);
                 if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                    check_was_breaked.store(true, Ordering::Relaxed);
                     return None;
                 }
 
                 match file_entry.type_of_file {
                     TypeOfFile::Image => {
-                        let file_entry_clone = file_entry.clone();
+                        let mut file_entry_clone = file_entry.clone();
 
                         let result = panic::catch_unwind(|| {
-                            match image::open(&file_entry.path) {
-                                Ok(_) => Some(None),
-                                Err(t) => {
-                                    let error_string = t.to_string();
-                                    // This error is a problem with image library, remove check when https://github.com/image-rs/jpeg-decoder/issues/130 will be fixed
-                                    if !error_string.contains("spectral selection is not allowed in non-progressive scan") {
-                                        file_entry.error_string = error_string;
-                                        Some(Some(file_entry))
-                                    } else {
-                                        Some(None)
-                                    }
+                            if let Err(e) = image::open(&file_entry.path) {
+                                let error_string = e.to_string();
+                                // This error is a problem with image library, remove check when https://github.com/image-rs/jpeg-decoder/issues/130 will be fixed
+                                if error_string.contains("spectral selection is not allowed in non-progressive scan") {
+                                    return Some(None);
                                 }
+                                file_entry.error_string = error_string;
                             }
+                            Some(Some(file_entry))
                         });
 
-                        // If image crashed during opening, we just skip checking its hash and go on
+                        // If image crashed during opening, needs to be printed info about crashes thing
                         if let Ok(image_result) = result {
-                             image_result
+                            image_result
                         } else {
-                            println!("Image-rs library crashed when opening \"{:?}\" image, please check if problem happens with latest image-rs version(this can be checked via https://github.com/qarmin/ImageOpening tool) and if it is not reported, please report bug here - https://github.com/image-rs/image/issues", file_entry_clone.path);
-                             Some(Some(file_entry_clone))
+                            let message = create_crash_message("Image-rs", &file_entry_clone.path.to_string_lossy().to_string(), "https://github.com/Serial-ATA/lofty-rs");
+                            println!("{message}");
+                            file_entry_clone.error_string = message;
+                            Some(Some(file_entry_clone))
                         }
                     }
-                    TypeOfFile::ArchiveZip => match fs::File::open(&file_entry.path) {
-                        Ok(file) => match zip::ZipArchive::new(file) {
-                            Ok(_) => Some(None),
-                            Err(e) => {
-                                // TODO Maybe filter out unnecessary types of errors
+                    TypeOfFile::ArchiveZip => match File::open(&file_entry.path) {
+                        Ok(file) => {
+                            if let Err(e) = zip::ZipArchive::new(file) {
                                 file_entry.error_string = e.to_string();
-                                Some(Some(file_entry))
                             }
-                        },
-                        Err(_inspected) => Some(None), // TODO maybe throw error or something
+                            Some(Some(file_entry))
+                        }
+                        Err(_inspected) => Some(None),
                     },
-                    #[cfg(feature = "broken_audio")]
-                    TypeOfFile::Audio => match fs::File::open(&file_entry.path) {
-                        Ok(file) => match rodio::Decoder::new(BufReader::new(file)) {
-                            Ok(_) => Some(None),
-                            Err(e) => {
-                                file_entry.error_string = e.to_string();
+                    TypeOfFile::Audio => match File::open(&file_entry.path) {
+                        Ok(file) => {
+                            let mut file_entry_clone = file_entry.clone();
+
+                            let result = panic::catch_unwind(|| {
+                                if let Err(e) = audio_checker::parse_audio_file(file) {
+                                    file_entry.error_string = e.to_string();
+                                }
                                 Some(Some(file_entry))
+                            });
+
+                            if let Ok(audio_result) = result {
+                                audio_result
+                            } else {
+                                let message = create_crash_message("Symphonia", &file_entry_clone.path.to_string_lossy().to_string(), "https://github.com/pdeljanov/Symphonia");
+                                println!("{message}");
+                                file_entry_clone.error_string = message;
+                                Some(Some(file_entry_clone))
                             }
-                        },
-                        Err(_inspected) => Some(None), // TODO maybe throw error or something
+                        }
+                        Err(_inspected) => Some(None),
                     },
+
+                    TypeOfFile::PDF => {
+                        match fs::read(&file_entry.path) {
+                            Ok(content) => {
+                                // Will be available in pdf > 0.7.2
+                                // let parser_options = ParseOptions {
+                                //     allow_error_in_option: true,
+                                //     allow_xref_error: true,
+                                //     allow_invalid_ops: true,
+                                //     allow_missing_endobj: true,
+                                // };
+                                // if let Err(e) = pdf::file::File::from_data_with_options(content, parser_options) {
+
+                                let mut file_entry_clone = file_entry.clone();
+                                let result = panic::catch_unwind(|| {
+                                    if let Err(e) = pdf::file::File::from_data(content) {
+                                        file_entry.error_string = e.to_string();
+                                        let error = unpack_pdf_error(e);
+                                        if let PdfError::InvalidPassword = error {
+                                            return Some(None);
+                                        }
+                                    }
+                                    Some(Some(file_entry))
+                                });
+                                if let Ok(pdf_result) = result {
+                                    pdf_result
+                                } else {
+                                    let message = create_crash_message("PDF-rs", &file_entry_clone.path.to_string_lossy().to_string(), "https://github.com/pdf-rs/pdf");
+                                    println!("{message}");
+                                    file_entry_clone.error_string = message;
+                                    Some(Some(file_entry_clone))
+                                }
+                            }
+                            Err(_inspected) => Some(None),
+                        }
+                    }
 
                     // This means that cache read invalid value because maybe cache comes from different czkawka version
                     TypeOfFile::Unknown => Some(None),
@@ -479,26 +564,16 @@ impl BrokenFiles {
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
 
-        // Break if stop was clicked
-        if check_was_breaked.load(Ordering::Relaxed) {
-            return false;
-        }
-
         // Just connect loaded results with already calculated
         for (_name, file_entry) in records_already_cached {
             vec_file_entry.push(file_entry.clone());
         }
 
-        self.broken_files = vec_file_entry
-            .iter()
-            .filter_map(|f| if f.error_string.is_empty() { None } else { Some(f.clone()) })
-            .collect();
-
         if self.use_cache {
             // Must save all results to file, old loaded from file with all currently counted results
-            let mut all_results: BTreeMap<String, FileEntry> = self.files_to_check.clone();
+            let mut all_results: BTreeMap<String, FileEntry> = Default::default();
 
-            for file_entry in vec_file_entry {
+            for file_entry in vec_file_entry.clone() {
                 all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
             }
             for (_name, file_entry) in loaded_hash_map {
@@ -506,6 +581,11 @@ impl BrokenFiles {
             }
             save_cache_to_file(&all_results, &mut self.text_messages, self.save_also_as_json);
         }
+
+        self.broken_files = vec_file_entry
+            .into_par_iter()
+            .filter_map(|f| if f.error_string.is_empty() { None } else { Some(f) })
+            .collect();
 
         self.information.number_of_broken_files = self.broken_files.len();
 
@@ -565,6 +645,8 @@ impl DebugPrint for BrokenFiles {
         println!("Included directories - {:?}", self.directories.included_directories);
         println!("Excluded directories - {:?}", self.directories.excluded_directories);
         println!("Recursive search - {}", self.recursive_search);
+        #[cfg(target_family = "unix")]
+        println!("Skip other filesystems - {}", self.directories.exclude_other_filesystems());
         println!("Delete Method - {:?}", self.delete_method);
         println!("-----------------------------------------");
     }
@@ -701,22 +783,38 @@ fn get_cache_file() -> String {
     "cache_broken_files.bin".to_string()
 }
 
-fn check_extension_avaibility(file_name_lowercase: &str) -> TypeOfFile {
+fn check_extension_availability(file_name_lowercase: &str) -> TypeOfFile {
     if IMAGE_RS_BROKEN_FILES_EXTENSIONS.iter().any(|e| file_name_lowercase.ends_with(e)) {
         TypeOfFile::Image
     } else if ZIP_FILES_EXTENSIONS.iter().any(|e| file_name_lowercase.ends_with(e)) {
         TypeOfFile::ArchiveZip
     } else if AUDIO_FILES_EXTENSIONS.iter().any(|e| file_name_lowercase.ends_with(e)) {
-        #[cfg(feature = "broken_audio")]
-        {
-            TypeOfFile::Audio
-        }
-
-        #[cfg(not(feature = "broken_audio"))]
-        {
-            TypeOfFile::Unknown
-        }
+        TypeOfFile::Audio
+    } else if PDF_FILES_EXTENSIONS.iter().any(|e| file_name_lowercase.ends_with(e)) {
+        TypeOfFile::PDF
     } else {
         TypeOfFile::Unknown
+    }
+}
+
+fn check_extension_allowed(type_of_file: &TypeOfFile, checked_types: &CheckedTypes) -> bool {
+    ((*type_of_file == TypeOfFile::Image) && ((*checked_types & CheckedTypes::IMAGE) == CheckedTypes::IMAGE))
+        || ((*type_of_file == TypeOfFile::PDF) && ((*checked_types & CheckedTypes::PDF) == CheckedTypes::PDF))
+        || ((*type_of_file == TypeOfFile::ArchiveZip) && ((*checked_types & CheckedTypes::ARCHIVE) == CheckedTypes::ARCHIVE))
+        || ((*type_of_file == TypeOfFile::Audio) && ((*checked_types & CheckedTypes::AUDIO) == CheckedTypes::AUDIO))
+}
+
+fn unpack_pdf_error(e: PdfError) -> PdfError {
+    if let Try {
+        file: _,
+        line: _,
+        column: _,
+        // context: _,
+        source,
+    } = e
+    {
+        unpack_pdf_error(*source)
+    } else {
+        e
     }
 }

@@ -1,6 +1,3 @@
-use directories_next::ProjectDirs;
-use image::{DynamicImage, ImageBuffer, Rgb};
-use imagepipe::{ImageSource, Pipeline};
 use std::ffi::OsString;
 use std::fs;
 use std::fs::{File, OpenOptions};
@@ -8,7 +5,41 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[cfg(feature = "heif")]
+use anyhow::Result;
+use directories_next::ProjectDirs;
+use image::{DynamicImage, ImageBuffer, Rgb};
+use imagepipe::{ImageSource, Pipeline};
+#[cfg(feature = "heif")]
+use libheif_rs::{Channel, ColorSpace, HeifContext, RgbChroma};
+
 /// Class for common functions used across other class/functions
+pub const RAW_IMAGE_EXTENSIONS: &[&str] = &[
+    ".mrw", ".arw", ".srf", ".sr2", ".mef", ".orf", ".srw", ".erf", ".kdc", ".kdc", ".dcs", ".rw2", ".raf", ".dcr", ".dng", ".pef", ".crw", ".iiq", ".3fr", ".nrw", ".nef", ".mos",
+    ".cr2", ".ari",
+];
+pub const IMAGE_RS_EXTENSIONS: &[&str] = &[
+    ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".webp", ".gif", ".ico", ".exr",
+];
+
+pub const IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".bmp", ".webp", ".exr"];
+
+pub const IMAGE_RS_BROKEN_FILES_EXTENSIONS: &[&str] = &[
+    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".gif", ".bmp", ".ico", ".jfif", ".jpe", ".pnz", ".dib", ".webp", ".exr",
+];
+pub const HEIC_EXTENSIONS: &[&str] = &[".heif", ".heifs", ".heic", ".heics", ".avci", ".avcs", ".avif", ".avifs"];
+
+pub const ZIP_FILES_EXTENSIONS: &[&str] = &[".zip"];
+
+pub const PDF_FILES_EXTENSIONS: &[&str] = &[".pdf"];
+
+pub const AUDIO_FILES_EXTENSIONS: &[&str] = &[
+    ".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".aiff", ".pcm", ".aif", ".aiff", ".aifc", ".m3a", ".mp2", ".mp4a", ".mp2a", ".mpga", ".wave", ".weba", ".wma", ".oga",
+];
+
+pub const VIDEO_FILES_EXTENSIONS: &[&str] = &[
+    ".mp4", ".mpv", ".flv", ".mp4a", ".webm", ".mpg", ".mp2", ".mpeg", ".m4p", ".m4v", ".avi", ".wmv", ".qt", ".mov", ".swf", ".mkv",
+];
 
 pub const LOOP_DURATION: u32 = 200; //ms
 
@@ -70,6 +101,20 @@ pub fn open_cache_folder(cache_file_name: &str, save_to_cache: bool, use_json: b
     None
 }
 
+#[cfg(feature = "heif")]
+pub fn get_dynamic_image_from_heic(path: &str) -> Result<DynamicImage> {
+    let im = HeifContext::read_from_file(path)?;
+    let handle = im.primary_image_handle()?;
+    let image = handle.decode(ColorSpace::Rgb(RgbChroma::Rgb), false)?;
+    let width = image.width(Channel::Interleaved).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let height = image.height(Channel::Interleaved).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let planes = image.planes();
+    let interleaved_plane = planes.interleaved.unwrap();
+    ImageBuffer::from_raw(width, height, interleaved_plane.data.to_owned())
+        .map(DynamicImage::ImageRgb8)
+        .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))
+}
+
 pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path> + std::fmt::Debug) -> Option<DynamicImage> {
     let file_handler = match OpenOptions::new().read(true).open(&path) {
         Ok(t) => t,
@@ -86,11 +131,9 @@ pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path> + std::fmt::Debug
         }
     };
 
-    let width = raw.width;
-    let height = raw.height;
     let source = ImageSource::Raw(raw);
 
-    let mut pipeline = match Pipeline::new_from_source(source, width, height, true) {
+    let mut pipeline = match Pipeline::new_from_source(source) {
         Ok(pipeline) => pipeline,
         Err(_e) => {
             return None;
@@ -113,7 +156,19 @@ pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path> + std::fmt::Debug
     };
 
     // println!("Properly hashed {:?}", path);
-    Some(image::DynamicImage::ImageRgb8(image))
+    Some(DynamicImage::ImageRgb8(image))
+}
+
+pub fn split_path(path: &Path) -> (String, String) {
+    match (path.parent(), path.file_name()) {
+        (Some(dir), Some(file)) => (dir.display().to_string(), file.to_string_lossy().into_owned()),
+        (Some(dir), None) => (dir.display().to_string(), String::new()),
+        (None, _) => (String::new(), String::new()),
+    }
+}
+
+pub fn create_crash_message(library_name: &str, file_path: &str, home_library_url: &str) -> String {
+    format!("{library_name} library crashed when opening \"{file_path}\", please check if this is fixed with the latest version of {library_name} (e.g. with https://github.com/qarmin/crates_tester) and if it is not fixed, please report bug here - {home_library_url}")
 }
 
 impl Common {

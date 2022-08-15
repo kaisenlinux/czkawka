@@ -1,22 +1,22 @@
 use std::cell::RefCell;
-use std::fs;
 use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
 
-use czkawka_core::common::get_dynamic_image_from_raw_image;
-use directories_next::ProjectDirs;
-use gtk::prelude::*;
-use gtk::{CheckButton, Image, SelectionMode, TextView, TreeView};
-use image::imageops::FilterType;
-use image::GenericImageView;
+use gdk4::gdk_pixbuf::Pixbuf;
+use gtk4::gdk_pixbuf::InterpType;
+use gtk4::prelude::*;
+use gtk4::{CheckButton, Image, SelectionMode, TextView, TreeView};
 
-use crate::flg;
-use czkawka_core::similar_images::{IMAGE_RS_EXTENSIONS, RAW_IMAGE_EXTENSIONS, SIMILAR_VALUES};
+#[cfg(feature = "heif")]
+use czkawka_core::common::get_dynamic_image_from_heic;
+use czkawka_core::common::{HEIC_EXTENSIONS, IMAGE_RS_EXTENSIONS, RAW_IMAGE_EXTENSIONS};
+use czkawka_core::similar_images::SIMILAR_VALUES;
 use czkawka_core::similar_videos::MAX_TOLERANCE;
 
 use crate::create_tree_view::*;
 use crate::delete_things;
+use crate::flg;
 use crate::gui_structs::gui_data::*;
 use crate::help_combo_box::{
     DUPLICATES_CHECK_METHOD_COMBO_BOX, DUPLICATES_HASH_TYPE_COMBO_BOX, IMAGES_HASH_SIZE_COMBO_BOX, IMAGES_HASH_TYPE_COMBO_BOX, IMAGES_RESIZE_ALGORITHM_COMBO_BOX,
@@ -25,6 +25,7 @@ use crate::help_functions::*;
 use crate::language_functions::LANGUAGES_ALL;
 use crate::localizer_core::generate_translation_hashmap;
 use crate::notebook_enums::NotebookMainEnum;
+use crate::notebook_info::NOTEBOOKS_INFO;
 use crate::opening_selecting_records::*;
 
 pub fn initialize_gui(gui_data: &mut GuiData) {
@@ -126,42 +127,24 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
                 let image_preview = gui_data.main_notebook.image_preview_duplicates.clone();
                 image_preview.hide();
 
-                let col_types: [glib::types::Type; 9] = [
-                    glib::types::Type::BOOL,   // ActivatableSelectButton
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Size
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                    glib::types::Type::STRING, // Color
-                    glib::types::Type::STRING, // TextColor
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::Duplicate as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
-                tree_view.selection().set_select_function(Some(Box::new(select_function_duplicates)));
+                tree_view.selection().set_select_function(select_function_duplicates);
 
                 create_tree_view_duplicates(&tree_view);
 
                 tree_view.set_widget_name("tree_view_duplicate_finder");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Empty Folders
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_empty_folder_finder.clone();
                 let tree_view = gui_data.main_notebook.tree_view_empty_folder_finder.clone();
 
-                let col_types: [glib::types::Type; 5] = [
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::EmptyDirectories as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -170,21 +153,15 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
 
                 tree_view.set_widget_name("tree_view_empty_folder_finder");
 
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Empty Files
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_empty_files_finder.clone();
                 let tree_view = gui_data.main_notebook.tree_view_empty_files_finder.clone();
-                let col_types: [glib::types::Type; 5] = [
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::EmptyFiles as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -192,22 +169,15 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
                 create_tree_view_empty_files(&tree_view);
 
                 tree_view.set_widget_name("tree_view_empty_files_finder");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Temporary Files
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_temporary_files_finder.clone();
                 let tree_view = gui_data.main_notebook.tree_view_temporary_files_finder.clone();
 
-                let col_types: [glib::types::Type; 5] = [
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::Temporary as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -215,24 +185,15 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
                 create_tree_view_temporary_files(&tree_view);
 
                 tree_view.set_widget_name("tree_view_temporary_files_finder");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Big Files
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_big_files_finder.clone();
                 let tree_view = gui_data.main_notebook.tree_view_big_files_finder.clone();
 
-                let col_types: [glib::types::Type; 7] = [
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Size
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // SizeAsBytes
-                    glib::types::Type::U64,    // ModificationAsSecs
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::BigFiles as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -240,8 +201,8 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
                 create_tree_view_big_files(&tree_view);
 
                 tree_view.set_widget_name("tree_view_big_files_finder");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Similar Images
             {
@@ -251,110 +212,58 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
                 let image_preview = gui_data.main_notebook.image_preview_similar_images.clone();
                 image_preview.hide();
 
-                let col_types: [glib::types::Type; 12] = [
-                    glib::types::Type::BOOL,   // ActivatableSelectButton
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Similarity
-                    glib::types::Type::STRING, // Size
-                    glib::types::Type::U64,    // SizeAsBytes
-                    glib::types::Type::STRING, // Dimensions
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                    glib::types::Type::STRING, // Color
-                    glib::types::Type::STRING, // TextColor
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::SimilarImages as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
-                tree_view.selection().set_select_function(Some(Box::new(select_function_similar_images)));
+                tree_view.selection().set_select_function(select_function_similar_images);
 
                 create_tree_view_similar_images(&tree_view);
 
                 tree_view.set_widget_name("tree_view_similar_images_finder");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Similar Videos
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_similar_videos_finder.clone();
                 let tree_view = gui_data.main_notebook.tree_view_similar_videos_finder.clone();
 
-                let col_types: [glib::types::Type; 10] = [
-                    glib::types::Type::BOOL,   // ActivatableSelectButton
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Size
-                    glib::types::Type::U64,    // SizeAsBytes
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                    glib::types::Type::STRING, // Color
-                    glib::types::Type::STRING, // TextColor
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::SimilarVideos as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
-                tree_view.selection().set_select_function(Some(Box::new(select_function_similar_videos)));
+                tree_view.selection().set_select_function(select_function_similar_videos);
 
                 create_tree_view_similar_videos(&tree_view);
 
                 tree_view.set_widget_name("tree_view_similar_videos_finder");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Same Music
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_same_music_finder.clone();
                 let tree_view = gui_data.main_notebook.tree_view_same_music_finder.clone();
 
-                let col_types: [glib::types::Type; 15] = [
-                    glib::types::Type::BOOL,   // ActivatableSelectButton
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Size
-                    glib::types::Type::U64,    // SizeAsBytes
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // Title
-                    glib::types::Type::STRING, // Artist
-                    glib::types::Type::STRING, // AlbumTitle
-                    glib::types::Type::STRING, // AlbumArtist
-                    glib::types::Type::STRING, // Year
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                    glib::types::Type::STRING, // Color
-                    glib::types::Type::STRING, // TextColor
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::SameMusic as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
-                tree_view.selection().set_select_function(Some(Box::new(select_function_same_music)));
+                tree_view.selection().set_select_function(select_function_same_music);
 
                 create_tree_view_same_music(&tree_view);
 
                 tree_view.set_widget_name("tree_view_same_music_finder");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Invalid Symlinks
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_invalid_symlinks.clone();
                 let tree_view = gui_data.main_notebook.tree_view_invalid_symlinks.clone();
 
-                let col_types: [glib::types::Type; 7] = [
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // DestinationPath
-                    glib::types::Type::STRING, // TypeOfError
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::Symlinks as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -362,23 +271,15 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
                 create_tree_view_invalid_symlinks(&tree_view);
 
                 tree_view.set_widget_name("tree_view_invalid_symlinks");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
             // Broken Files
             {
                 let scrolled_window = gui_data.main_notebook.scrolled_window_broken_files.clone();
                 let tree_view = gui_data.main_notebook.tree_view_broken_files.clone();
 
-                let col_types: [glib::types::Type; 6] = [
-                    glib::types::Type::BOOL,   // SelectionButton
-                    glib::types::Type::STRING, // Name
-                    glib::types::Type::STRING, // Path
-                    glib::types::Type::STRING, // ErrorType
-                    glib::types::Type::STRING, // Modification
-                    glib::types::Type::U64,    // ModificationAsSecs
-                ];
-                let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::BrokenFiles as usize].columns_types);
 
                 tree_view.set_model(Some(&list_store));
                 tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -386,8 +287,24 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
                 create_tree_view_broken_files(&tree_view);
 
                 tree_view.set_widget_name("tree_view_broken_files");
-                scrolled_window.add(&tree_view);
-                scrolled_window.show_all();
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
+            }
+            // Bad Extensions
+            {
+                let scrolled_window = gui_data.main_notebook.scrolled_window_bad_extensions.clone();
+                let tree_view = gui_data.main_notebook.tree_view_bad_extensions.clone();
+
+                let list_store: gtk4::ListStore = gtk4::ListStore::new(NOTEBOOKS_INFO[NotebookMainEnum::BadExtensions as usize].columns_types);
+
+                tree_view.set_model(Some(&list_store));
+                tree_view.selection().set_mode(SelectionMode::Multiple);
+
+                create_tree_view_broken_files(&tree_view);
+
+                tree_view.set_widget_name("tree_view_bad_extensions");
+                scrolled_window.set_child(Some(&tree_view));
+                scrolled_window.show();
             }
         }
     }
@@ -399,12 +316,13 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
             let scrolled_window = gui_data.upper_notebook.scrolled_window_included_directories.clone();
             let tree_view = gui_data.upper_notebook.tree_view_included_directories.clone();
             let evk = gui_data.upper_notebook.evk_tree_view_included_directories.clone();
+            let gc = gui_data.upper_notebook.gc_tree_view_included_directories.clone();
 
             let col_types: [glib::types::Type; 2] = [
                 glib::types::Type::STRING, // Path
                 glib::types::Type::BOOL,   // ReferenceButton
             ];
-            let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+            let list_store: gtk4::ListStore = gtk4::ListStore::new(&col_types);
 
             tree_view.set_model(Some(&list_store));
             tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -412,10 +330,10 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
             create_tree_view_included_directories(&tree_view);
 
             tree_view.set_widget_name("tree_view_upper_included_directories");
-            scrolled_window.add(&tree_view);
-            scrolled_window.show_all();
+            scrolled_window.set_child(Some(&tree_view));
+            scrolled_window.show();
 
-            tree_view.connect_button_press_event(opening_double_click_function_directories);
+            gc.connect_pressed(opening_double_click_function_directories);
             evk.connect_key_pressed(opening_enter_function_ported_upper_directories);
             evk.connect_key_released(move |_event_controller_key, _key_value, key_code, _modifier_type| {
                 if key_code == KEY_DELETE {
@@ -435,9 +353,10 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
             let scrolled_window = gui_data.upper_notebook.scrolled_window_excluded_directories.clone();
             let tree_view = gui_data.upper_notebook.tree_view_excluded_directories.clone();
             let evk = gui_data.upper_notebook.evk_tree_view_excluded_directories.clone();
+            let gc = gui_data.upper_notebook.gc_tree_view_excluded_directories.clone();
 
             let col_types: [glib::types::Type; 1] = [glib::types::Type::STRING];
-            let list_store: gtk::ListStore = gtk::ListStore::new(&col_types);
+            let list_store: gtk4::ListStore = gtk4::ListStore::new(&col_types);
 
             tree_view.set_model(Some(&list_store));
             tree_view.selection().set_mode(SelectionMode::Multiple);
@@ -445,10 +364,10 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
             create_tree_view_excluded_directories(&tree_view);
 
             tree_view.set_widget_name("tree_view_upper_excluded_directories");
-            scrolled_window.add(&tree_view);
-            scrolled_window.show_all();
+            scrolled_window.set_child(Some(&tree_view));
+            scrolled_window.show();
 
-            tree_view.connect_button_press_event(opening_double_click_function_directories);
+            gc.connect_pressed(opening_double_click_function_directories);
             evk.connect_key_pressed(opening_enter_function_ported_upper_directories);
             evk.connect_key_released(move |_event_controller_key, _key_value, key_code, _modifier_type| {
                 if key_code == KEY_DELETE {
@@ -470,9 +389,9 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
         let window_progress = gui_data.progress_window.window_progress.clone();
         let stop_sender = gui_data.stop_sender.clone();
 
-        window_progress.connect_delete_event(move |_, _| {
+        window_progress.connect_close_request(move |_| {
             stop_sender.send(()).unwrap();
-            gtk::Inhibit(true)
+            gtk4::Inhibit(true)
         });
     }
 
@@ -482,9 +401,23 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
 }
 
 fn connect_event_mouse(gui_data: &GuiData) {
-    for tree_view in gui_data.main_notebook.get_main_tree_views() {
-        tree_view.connect_button_press_event(opening_double_click_function);
-        tree_view.connect_button_release_event(opening_middle_mouse_function);
+    // GTK 4
+    for gc in [
+        &gui_data.main_notebook.gc_tree_view_duplicate_finder,
+        &gui_data.main_notebook.gc_tree_view_empty_folder_finder,
+        &gui_data.main_notebook.gc_tree_view_empty_files_finder,
+        &gui_data.main_notebook.gc_tree_view_temporary_files_finder,
+        &gui_data.main_notebook.gc_tree_view_big_files_finder,
+        &gui_data.main_notebook.gc_tree_view_similar_images_finder,
+        &gui_data.main_notebook.gc_tree_view_similar_videos_finder,
+        &gui_data.main_notebook.gc_tree_view_same_music_finder,
+        &gui_data.main_notebook.gc_tree_view_invalid_symlinks,
+        &gui_data.main_notebook.gc_tree_view_broken_files,
+        &gui_data.main_notebook.gc_tree_view_bad_extensions,
+    ] {
+        gc.set_button(0);
+        gc.connect_pressed(opening_double_click_function);
+        gc.connect_released(opening_middle_mouse_function); // TODO GTK 4 - https://github.com/gtk-rs/gtk4-rs/issues/1043
     }
 
     // Duplicate
@@ -495,8 +428,12 @@ fn connect_event_mouse(gui_data: &GuiData) {
         let preview_path = gui_data.preview_path.clone();
         let tree_view = gui_data.main_notebook.tree_view_duplicate_finder.clone();
 
-        tree_view.connect_button_release_event(move |tree_view, _event| {
-            let nb_object = &NOTEBOOKS_INFOS[NotebookMainEnum::Duplicate as usize];
+        tree_view.set_property("activate-on-single-click", true);
+
+        // TODO GTK 4, currently not works, connect_pressed shows previous thing - https://gitlab.gnome.org/GNOME/gtk/-/issues/4939
+        // Use connect_released when it will be fixed, currently using connect_row_activated workaround
+        tree_view.connect_row_activated(move |tree_view, _b, _c| {
+            let nb_object = &NOTEBOOKS_INFO[NotebookMainEnum::Duplicate as usize];
             let preview_path = preview_path.clone();
             show_preview(
                 tree_view,
@@ -507,20 +444,21 @@ fn connect_event_mouse(gui_data: &GuiData) {
                 nb_object.column_path,
                 nb_object.column_name,
             );
-
-            gtk::Inhibit(false)
         });
     }
     // Similar Images
     {
         let text_view_errors = gui_data.text_view_errors.clone();
-        let tree_view = gui_data.main_notebook.tree_view_similar_images_finder.clone();
         let check_button_settings_show_preview = gui_data.settings.check_button_settings_show_preview_similar_images.clone();
         let preview_path = gui_data.preview_path.clone();
         let image_preview = gui_data.main_notebook.image_preview_similar_images.clone();
+        let tree_view = gui_data.main_notebook.tree_view_similar_images_finder.clone();
 
-        tree_view.connect_button_release_event(move |tree_view, _event| {
-            let nb_object = &NOTEBOOKS_INFOS[NotebookMainEnum::SimilarImages as usize];
+        tree_view.set_property("activate-on-single-click", true);
+
+        // TODO GTK 4, currently not works, connect_pressed shows previous thing
+        tree_view.connect_row_activated(move |tree_view, _b, _c| {
+            let nb_object = &NOTEBOOKS_INFO[NotebookMainEnum::SimilarImages as usize];
             let preview_path = preview_path.clone();
             show_preview(
                 tree_view,
@@ -531,60 +469,10 @@ fn connect_event_mouse(gui_data: &GuiData) {
                 nb_object.column_path,
                 nb_object.column_name,
             );
-            gtk::Inhibit(false)
         });
     }
-
-    // GTK 4
-    // for gc in [
-    //     gui_data.main_notebook.gc_tree_view_duplicate_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_empty_folder_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_empty_files_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_temporary_files_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_big_files_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_similar_images_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_similar_videos_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_same_music_finder.clone(),
-    //     gui_data.main_notebook.gc_tree_view_invalid_symlinks.clone(),
-    //     gui_data.main_notebook.gc_tree_view_broken_files.clone(),
-    // ] {
-    //     gc.set_button(0);
-    //     gc.connect_pressed(opening_double_click_function);
-    // }
-    //
-    // // Duplicate
-    // {
-    //     let text_view_errors = gui_data.text_view_errors.clone();
-    //     let check_button_settings_show_preview = gui_data.settings.check_button_settings_show_preview_duplicates.clone();
-    //     let image_preview = gui_data.main_notebook.image_preview_duplicates.clone();
-    //     let preview_path = gui_data.preview_path.clone();
-    //
-    //     let gc = gui_data.main_notebook.gc_tree_view_duplicate_finder.clone();
-    //
-    //     gc.connect_released(move |gc, _event, _, _| {
-    //         let tree_view = gc.widget().unwrap().downcast::<gtk4::TreeView>().unwrap();
-    //         let nb_object = &NOTEBOOKS_INFOS[NotebookMainEnum::Duplicate as usize];
-    //         let preview_path = preview_path.clone();
-    //         show_preview(&tree_view, &text_view_errors, &check_button_settings_show_preview, &image_preview, preview_path, nb_object.column_path, nb_object.column_name);
-    //     });
-    // }
-    // // Similar Images
-    // {
-    //     let text_view_errors = gui_data.text_view_errors.clone();
-    //     let check_button_settings_show_preview = gui_data.settings.check_button_settings_show_preview_similar_images.clone();
-    //     let preview_path = gui_data.preview_path.clone();
-    //     let image_preview = gui_data.main_notebook.image_preview_similar_images.clone();
-    //
-    //     let gc = gui_data.main_notebook.gc_tree_view_similar_images_finder.clone();
-    //
-    //     gc.connect_released(move |gc, _event, _, _| {
-    //         let tree_view = gc.widget().unwrap().downcast::<gtk4::TreeView>().unwrap();
-    //         let nb_object = &NOTEBOOKS_INFOS[NotebookMainEnum::SimilarImages as usize];
-    //         let preview_path = preview_path.clone();
-    //         show_preview(&tree_view, &text_view_errors, &check_button_settings_show_preview, &image_preview, preview_path, nb_object.column_path, nb_object.column_name);
-    //     });
-    // }
 }
+
 fn connect_event_buttons(gui_data: &GuiData) {
     for evk in [
         //gui_data.main_notebook.evk_tree_view_duplicate_finder.clone(), // Manual - needs to show/hide preview
@@ -597,6 +485,7 @@ fn connect_event_buttons(gui_data: &GuiData) {
         gui_data.main_notebook.evk_tree_view_same_music_finder.clone(),
         gui_data.main_notebook.evk_tree_view_invalid_symlinks.clone(),
         gui_data.main_notebook.evk_tree_view_broken_files.clone(),
+        gui_data.main_notebook.evk_tree_view_bad_extensions.clone(),
     ] {
         let gui_data_clone = gui_data.clone();
         evk.connect_key_pressed(opening_enter_function_ported);
@@ -623,9 +512,9 @@ fn connect_event_buttons(gui_data: &GuiData) {
                 glib::MainContext::default().spawn_local(delete_things(gui_data_clone.clone()));
             }
             let preview_path = preview_path.clone();
-            let nb_object = &NOTEBOOKS_INFOS[NotebookMainEnum::Duplicate as usize];
+            let nb_object = &NOTEBOOKS_INFO[NotebookMainEnum::Duplicate as usize];
             show_preview(
-                &event_controller_key.widget().unwrap().downcast::<gtk::TreeView>().unwrap(),
+                &event_controller_key.widget().downcast::<TreeView>().unwrap(),
                 &text_view_errors,
                 &check_button_settings_show_preview,
                 &image_preview,
@@ -651,9 +540,9 @@ fn connect_event_buttons(gui_data: &GuiData) {
                 glib::MainContext::default().spawn_local(delete_things(gui_data_clone.clone()));
             }
             let preview_path = preview_path.clone();
-            let nb_object = &NOTEBOOKS_INFOS[NotebookMainEnum::SimilarImages as usize];
+            let nb_object = &NOTEBOOKS_INFO[NotebookMainEnum::SimilarImages as usize];
             show_preview(
-                &event_controller_key.widget().unwrap().downcast::<gtk::TreeView>().unwrap(),
+                &event_controller_key.widget().downcast::<TreeView>().unwrap(),
                 &text_view_errors,
                 &check_button_settings_show_preview_similar_images,
                 &image_preview,
@@ -681,130 +570,125 @@ fn show_preview(
     // Only show preview when selected is only one item, because there is no method to recognize current clicked item in multiselection
     if selected_rows.len() == 1 && check_button_settings_show_preview.is_active() {
         let tree_path = selected_rows[0].clone();
-        if let Some(proj_dirs) = ProjectDirs::from("pl", "Qarmin", "Czkawka") {
-            // TODO labels on {} are in testing stage, so we just ignore for now this warning until found better idea how to fix this
-            #[allow(clippy::never_loop)]
-            'dir: loop {
-                let cache_dir = proj_dirs.cache_dir();
-                if cache_dir.exists() {
-                    if !cache_dir.is_dir() {
+        // TODO labels on {} are in testing stage, so we just ignore for now this warning until found better idea how to fix this
+        #[allow(clippy::never_loop)]
+        'dir: loop {
+            let path = tree_model.get::<String>(&tree_model.iter(&tree_path).unwrap(), column_path);
+            let name = tree_model.get::<String>(&tree_model.iter(&tree_path).unwrap(), column_name);
+
+            let file_name = get_full_name_from_path_name(&path, &name);
+            let file_name = file_name.as_str();
+
+            {
+                let preview_path = preview_path.borrow();
+                let preview_path = preview_path.deref();
+                if file_name == preview_path {
+                    return; // Preview is already created, no need to recreate it
+                }
+            }
+
+            let is_heic;
+            let is_webp;
+            if let Some(extension) = Path::new(&name).extension() {
+                let extension = format!(".{}", extension.to_string_lossy().to_lowercase());
+                is_heic = HEIC_EXTENSIONS.contains(&extension.as_str());
+                is_webp = ".webp" == extension;
+                if !RAW_IMAGE_EXTENSIONS.contains(&extension.as_str()) && !IMAGE_RS_EXTENSIONS.contains(&extension.as_str()) && !is_heic {
+                    break 'dir;
+                }
+            } else {
+                break 'dir;
+            }
+            let mut pixbuf = if is_heic || is_webp {
+                let image = if is_heic {
+                    #[cfg(feature = "heif")]
+                    match get_dynamic_image_from_heic(file_name) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            add_text_to_text_view(
+                                text_view_errors,
+                                flg!(
+                                    "preview_image_opening_failure",
+                                    generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", e.to_string())])
+                                )
+                                .as_str(),
+                            );
+                            break 'dir;
+                        }
+                    }
+
+                    #[cfg(not(feature = "heif"))]
+                    panic!("")
+                } else if is_webp {
+                    match image::open(file_name) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            add_text_to_text_view(
+                                text_view_errors,
+                                flg!(
+                                    "preview_image_opening_failure",
+                                    generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", e.to_string())])
+                                )
+                                .as_str(),
+                            );
+                            break 'dir;
+                        }
+                    }
+                } else {
+                    panic!("");
+                };
+
+                match get_pixbuf_from_dynamic_image(&image) {
+                    Ok(t) => t,
+                    Err(e) => {
                         add_text_to_text_view(
                             text_view_errors,
-                            format!("Path {} doesn't point at folder, which is needed by image preview", cache_dir.display()).as_str(),
+                            flg!(
+                                "preview_image_opening_failure",
+                                generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", e.to_string())])
+                            )
+                            .as_str(),
                         );
                         break 'dir;
                     }
-                } else if let Err(e) = fs::create_dir_all(cache_dir) {
+                }
+            } else {
+                match Pixbuf::from_file(file_name) {
+                    Ok(pixbuf) => pixbuf,
+                    Err(e) => {
+                        add_text_to_text_view(
+                            text_view_errors,
+                            flg!(
+                                "preview_image_opening_failure",
+                                generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", e.to_string())])
+                            )
+                            .as_str(),
+                        );
+                        break 'dir;
+                    }
+                }
+            };
+
+            pixbuf = match resize_pixbuf_dimension(pixbuf, (800, 800), InterpType::Nearest) {
+                None => {
                     add_text_to_text_view(
                         text_view_errors,
-                        flg!(
-                            "preview_failed_to_create_cache_dir",
-                            generate_translation_hashmap(vec![("name", cache_dir.display().to_string()), ("reason", e.to_string())])
-                        )
-                        .as_str(),
+                        flg!("preview_image_resize_failure", generate_translation_hashmap(vec![("name", file_name.to_string())])).as_str(),
                     );
                     break 'dir;
                 }
-                let path = tree_model.value(&tree_model.iter(&tree_path).unwrap(), column_path).get::<String>().unwrap();
-                let name = tree_model.value(&tree_model.iter(&tree_path).unwrap(), column_name).get::<String>().unwrap();
+                Some(pixbuf) => pixbuf,
+            };
 
-                let file_name = get_full_name_from_path_name(&path, &name);
-                let file_name = file_name.as_str();
-
-                if let Some(extension) = Path::new(file_name).extension() {
-                    let extension_lowercase = format!(".{}", extension.to_string_lossy().to_lowercase());
-
-                    let is_raw_image = RAW_IMAGE_EXTENSIONS.contains(&extension_lowercase.as_str());
-                    if !IMAGE_RS_EXTENSIONS.contains(&extension_lowercase.as_str()) && !is_raw_image {
-                        break 'dir;
-                    }
-
-                    {
-                        let preview_path = preview_path.borrow();
-                        let preview_path = preview_path.deref();
-                        if file_name == preview_path {
-                            return; // Preview is already created, no need to recreate it
-                        }
-                    }
-                    let img;
-                    if !is_raw_image {
-                        img = match image::open(&file_name) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                add_text_to_text_view(
-                                    text_view_errors,
-                                    flg!(
-                                        "preview_temporary_file",
-                                        generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", e.to_string())])
-                                    )
-                                    .as_str(),
-                                );
-                                break 'dir;
-                            }
-                        };
-                    } else {
-                        img = match get_dynamic_image_from_raw_image(file_name) {
-                            Some(t) => t,
-                            None => {
-                                add_text_to_text_view(
-                                    text_view_errors,
-                                    flg!(
-                                        "preview_temporary_file",
-                                        generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", "None".to_string())])
-                                    )
-                                    .as_str(),
-                                );
-                                break 'dir;
-                            }
-                        }
-                    }
-                    if img.width() == 0 || img.height() == 0 {
-                        add_text_to_text_view(
-                            text_view_errors,
-                            flg!("preview_0_size", generate_translation_hashmap(vec![("name", file_name.to_string())])).as_str(),
-                        );
-                        break 'dir;
-                    }
-                    let img = resize_dynamic_image_dimension(img, (400, 400), &FilterType::Triangle); // Triangle and Nearest is the fastest
-                    let file_dir = match is_raw_image {
-                        true => cache_dir.join("cached_file.jpg"),
-                        false => cache_dir.join(format!("cached_file.{}", extension.to_string_lossy().to_lowercase())),
-                    };
-                    if let Err(e) = img.save(&file_dir) {
-                        add_text_to_text_view(
-                            text_view_errors,
-                            flg!(
-                                "preview_temporary_image_save",
-                                generate_translation_hashmap(vec![("name", file_dir.display().to_string()), ("reason", e.to_string())])
-                            )
-                            .as_str(),
-                        );
-                        let _ = fs::remove_file(&file_dir);
-                        break 'dir;
-                    }
-                    let string_dir = file_dir.to_string_lossy().to_string();
-                    image_preview.set_from_file(string_dir);
-
-                    {
-                        let mut preview_path = preview_path.borrow_mut();
-                        *preview_path = file_name.to_string();
-                    }
-
-                    if let Err(e) = fs::remove_file(&file_dir) {
-                        add_text_to_text_view(
-                            text_view_errors,
-                            flg!(
-                                "preview_temporary_image_remove",
-                                generate_translation_hashmap(vec![("name", file_dir.display().to_string()), ("reason", e.to_string())])
-                            )
-                            .as_str(),
-                        );
-                        break 'dir;
-                    }
-                    created_image = true;
-                }
-                break 'dir;
+            image_preview.set_from_pixbuf(Some(&pixbuf));
+            {
+                let mut preview_path = preview_path.borrow_mut();
+                *preview_path = file_name.to_string();
             }
+
+            created_image = true;
+
+            break 'dir;
         }
     }
     if created_image {

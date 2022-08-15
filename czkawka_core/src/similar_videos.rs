@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use vid_dup_finder_lib::HashCreationErrorKind::DetermineVideo;
 use vid_dup_finder_lib::{NormalizedTolerance, VideoHash};
 
+use crate::common::VIDEO_FILES_EXTENSIONS;
 use crate::common::{open_cache_folder, Common, LOOP_DURATION};
 use crate::common_directory::Directories;
 use crate::common_extensions::Extensions;
@@ -25,7 +26,6 @@ use crate::common_messages::Messages;
 use crate::common_traits::{DebugPrint, PrintResults, SaveResults};
 use crate::flc;
 use crate::localizer_core::generate_translation_hashmap;
-use crate::similar_images::VIDEO_FILES_EXTENSIONS;
 
 pub const MAX_TOLERANCE: i32 = 20;
 
@@ -50,10 +50,12 @@ pub struct FileEntry {
 struct Hamming;
 
 impl bk_tree::Metric<Vec<u8>> for Hamming {
+    #[inline(always)]
     fn distance(&self, a: &Vec<u8>, b: &Vec<u8>) -> u32 {
         hamming::distance_fast(a, b).unwrap() as u32
     }
 
+    #[inline(always)]
     fn threshold_distance(&self, a: &Vec<u8>, b: &Vec<u8>, _threshold: u32) -> Option<u32> {
         Some(self.distance(a, b))
     }
@@ -166,6 +168,13 @@ impl SimilarVideos {
         self.recursive_search = recursive_search;
     }
 
+    #[cfg(target_family = "unix")]
+    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
+        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
+    }
+    #[cfg(not(target_family = "unix"))]
+    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
+
     pub fn set_minimal_file_size(&mut self, minimal_file_size: u64) {
         self.minimal_file_size = match minimal_file_size {
             0 => 1,
@@ -198,6 +207,9 @@ impl SimilarVideos {
     pub fn find_similar_videos(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) {
         if !check_if_ffmpeg_is_installed() {
             self.text_messages.errors.push(flc!("core_ffmpeg_not_found"));
+            #[cfg(target_os = "windows")]
+            self.text_messages.errors.push(flc!("core_ffmpeg_not_found_windows"));
+            #[cfg(target_os = "linux")]
             self.text_messages.errors.push(flc!(
                 "core_ffmpeg_missing_in_snap",
                 generate_translation_hashmap(vec![("url", "https://github.com/snapcrafters/ffmpeg/issues/73".to_string())])
@@ -231,7 +243,12 @@ impl SimilarVideos {
         let mut folders_to_check: Vec<PathBuf> = Vec::with_capacity(1024 * 2); // This should be small enough too not see to big difference and big enough to store most of paths without needing to resize vector
 
         if !self.allowed_extensions.using_custom_extensions() {
-            self.allowed_extensions.extend_allowed_extensions(&VIDEO_FILES_EXTENSIONS);
+            self.allowed_extensions.extend_allowed_extensions(VIDEO_FILES_EXTENSIONS);
+        } else {
+            self.allowed_extensions.validate_allowed_extensions(VIDEO_FILES_EXTENSIONS);
+            if !self.allowed_extensions.using_custom_extensions() {
+                return true;
+            }
         }
 
         // Add root folders for finding
@@ -327,6 +344,15 @@ impl SimilarVideos {
 
                             if self.excluded_items.is_excluded(&next_folder) {
                                 continue 'dir;
+                            }
+
+                            #[cfg(target_family = "unix")]
+                            if self.directories.exclude_other_filesystems() {
+                                match self.directories.is_on_other_filesystems(&next_folder) {
+                                    Ok(true) => continue 'dir,
+                                    Err(e) => warnings.push(e.to_string()),
+                                    _ => (),
+                                }
                             }
 
                             dir_result.push(next_folder);
@@ -450,6 +476,7 @@ impl SimilarVideos {
         let hash_map_modification = SystemTime::now();
 
         //// PROGRESS THREAD START
+        let check_was_stopped = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
         let progress_thread_run = Arc::new(AtomicBool::new(true));
 
         let atomic_file_counter = Arc::new(AtomicUsize::new(0));
@@ -482,7 +509,7 @@ impl SimilarVideos {
             .map(|file_entry| {
                 atomic_file_counter.fetch_add(1, Ordering::Relaxed);
                 if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                    // This will not break
+                    check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
                 }
                 let mut file_entry = file_entry.1.clone();
@@ -493,7 +520,7 @@ impl SimilarVideos {
                         return {
                             file_entry.error = format!("Failed to hash file, reason {}", e);
                             Some(file_entry)
-                        }
+                        };
                     }
                 };
 
@@ -537,6 +564,11 @@ impl SimilarVideos {
             save_hashes_to_file(&all_results, &mut self.text_messages, self.save_also_as_json);
         }
 
+        // Break if stop was clicked after saving to cache
+        if check_was_stopped.load(Ordering::Relaxed) {
+            return false;
+        }
+
         Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - saving data to files".to_string());
         let hash_map_modification = SystemTime::now();
 
@@ -565,10 +597,10 @@ impl SimilarVideos {
         self.similar_vectors = collected_similar_videos;
 
         if self.use_reference_folders {
-            let mut similars_vector = Default::default();
-            mem::swap(&mut self.similar_vectors, &mut similars_vector);
+            let mut similar_vector = Default::default();
+            mem::swap(&mut self.similar_vectors, &mut similar_vector);
             let reference_directories = self.directories.reference_directories.clone();
-            self.similar_referenced_vectors = similars_vector
+            self.similar_referenced_vectors = similar_vector
                 .into_iter()
                 .filter_map(|vec_file_entry| {
                     let mut files_from_referenced_folders = Vec::new();

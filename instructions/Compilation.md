@@ -4,34 +4,36 @@
 
 If you only want the terminal version without a GUI, just skip all the packages with `gtk` in their names.
 
-FFmpeg is not included here, because is not needed to build because it is dynamically loaded.
+FFmpeg is not included here because it is not needed to build - it is dynamically loaded.
+
+Support for heif images is optional and require to install libheif library.
 
 
 | Program | Min  | What for                                                                      |
 |---------|------|-------------------------------------------------------------------------------|
-| Rust    | 1.53 | Czkawka, aims to support the latest available version of Rust on Ubuntu 20.04 |
-| GTK     | 3.24 | Only for the `GTK` backend                                                    |
+| Rust    | 1.60 | Czkawka, aims to support the latest available version of Rust on Ubuntu 22.04 |
+| GTK     | 4.6  | Only for the `GTK` backend                                                    |
 
 #### Debian / Ubuntu
 ```shell
-sudo apt install -y curl  # Needed by Rust update tool
+sudo apt install -y curl git build-essential # Needed by Rust update tool
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh # Download the latest stable Rust
-sudo apt install -y libgtk-3-dev
+sudo apt install -y libgtk-4-dev
 ```
 
 #### Fedora / CentOS / Rocky Linux
 ```shell
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh # Download the latest stable Rust
-sudo yum install gtk3-devel glib2-devel
+sudo yum install gtk4-devel glib2-devel
 ```
 
 #### macOS
-You need to install Rust via Homebrew and GTK Libraries
+You need to install Rust via Homebrew, GTK Libraries and optionally heif library(to have support for heic files, which are quite popular on Mac)
 ```shell
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 brew install rustup
 rustup-init
-brew install gtk+3 adwaita-icon-theme librsvg
+brew install gtk4 adwaita-icon-theme librsvg libheif
 ```
 
 ### Windows
@@ -42,7 +44,7 @@ For Linux-to-Windows cross-building instruction look at the CI.
 
 <!-- First you need to install Visual C++ components from Visual Studio installer - https://visualstudio.microsoft.com/downloads/
 Next install Rust from site https://rustup.rs/
-After that the latest GTK 3 runtime must be installed from https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases
+After that the latest GTK 4 runtime must be installed from(not available yet for GTK 4) https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases
 -->
 
 ### Docker
@@ -54,8 +56,8 @@ docker build ./misc/docker/ --tag cargo-gtk
 ## Compilation
 
 Czkawka can be installed with Debug or Release build.  
-With Debug build additional checks e.g. for variables overflow are available but depends of the usage it works very slow so should be using only to develop this app.    
-Compilation with `--release` flag will optimize binaries, so they can be used with good performance(official binaries are build with this flag)
+With Debug build additional checks, e.g., variables overflow, are available, but depending on the usage it works very slow, so it should be used only for development purposes.    
+Compilation with `--release` flag will optimize binaries, so they can be used with good performance (official binaries are built with this flag)
 
 
 - Download the source
@@ -86,10 +88,9 @@ target/release/czkawka_gui
 ```
 
 ## Additional features
-For now, finding broken audio files is temporary disabled by default, because app crashes when audio libraries are not found on the computer.  
-I'm waiting for ability to disable audio playback feature, so after that I will be able to re-enable by default this feature (https://github.com/RustAudio/rodio/issues/349)
+Currently, the only additional dependence is heif image support.
 
-To enable checking for broken audio files, just add ` --all-features`
+To enable checking for heif images, just add ` --all-features` or `--features heif`
 ```
-cargo run --all-features --bin czkawka_cli -- broken  -d /home/rafal/ -f "results.txt"
+cargo run --features heif --bin czkawka_cli -- image  -d /home/rafal/ -f "results.txt"
 ```

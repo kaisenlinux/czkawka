@@ -3,10 +3,11 @@ use std::sync::Arc;
 use std::thread;
 
 use glib::Sender;
-use gtk::prelude::*;
+use gtk4::prelude::*;
 
+use czkawka_core::bad_extensions::BadExtensions;
 use czkawka_core::big_file::BigFile;
-use czkawka_core::broken_files::BrokenFiles;
+use czkawka_core::broken_files::{BrokenFiles, CheckedTypes};
 use czkawka_core::common_dir_traversal;
 use czkawka_core::duplicate::DuplicateFinder;
 use czkawka_core::empty_files::EmptyFiles;
@@ -20,7 +21,8 @@ use czkawka_core::*;
 
 use crate::gui_structs::gui_data::GuiData;
 use crate::help_combo_box::{
-    DUPLICATES_CHECK_METHOD_COMBO_BOX, DUPLICATES_HASH_TYPE_COMBO_BOX, IMAGES_HASH_SIZE_COMBO_BOX, IMAGES_HASH_TYPE_COMBO_BOX, IMAGES_RESIZE_ALGORITHM_COMBO_BOX,
+    BIG_FILES_CHECK_METHOD_COMBO_BOX, DUPLICATES_CHECK_METHOD_COMBO_BOX, DUPLICATES_HASH_TYPE_COMBO_BOX, IMAGES_HASH_SIZE_COMBO_BOX, IMAGES_HASH_TYPE_COMBO_BOX,
+    IMAGES_RESIZE_ALGORITHM_COMBO_BOX,
 };
 use crate::help_functions::*;
 use crate::notebook_enums::*;
@@ -41,23 +43,32 @@ pub fn connect_button_search(
     futures_sender_temporary: futures::channel::mpsc::UnboundedSender<temporary::ProgressData>,
     futures_sender_invalid_symlinks: futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
     futures_sender_broken_files: futures::channel::mpsc::UnboundedSender<broken_files::ProgressData>,
+    futures_sender_bad_extensions: futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
 ) {
+    let check_button_settings_one_filesystem = gui_data.settings.check_button_settings_one_filesystem.clone();
     let combo_box_image_hash_size = gui_data.main_notebook.combo_box_image_hash_size.clone();
     let combo_box_image_hash_algorithm = gui_data.main_notebook.combo_box_image_hash_algorithm.clone();
     let combo_box_image_resize_algorithm = gui_data.main_notebook.combo_box_image_resize_algorithm.clone();
     let combo_box_duplicate_check_method = gui_data.main_notebook.combo_box_duplicate_check_method.clone();
     let combo_box_duplicate_hash_type = gui_data.main_notebook.combo_box_duplicate_hash_type.clone();
+    let combo_box_big_files_mode = gui_data.main_notebook.combo_box_big_files_mode.clone();
     let buttons_array = gui_data.bottom_buttons.buttons_array.clone();
     let check_button_image_ignore_same_size = gui_data.main_notebook.check_button_image_ignore_same_size.clone();
     let check_button_video_ignore_same_size = gui_data.main_notebook.check_button_video_ignore_same_size.clone();
     let buttons_names = gui_data.bottom_buttons.buttons_names;
     let buttons_search_clone = gui_data.bottom_buttons.buttons_search.clone();
     let check_button_duplicates_use_prehash_cache = gui_data.settings.check_button_duplicates_use_prehash_cache.clone();
-    let check_button_music_album_artist: gtk::CheckButton = gui_data.main_notebook.check_button_music_album_artist.clone();
-    let check_button_music_album_title: gtk::CheckButton = gui_data.main_notebook.check_button_music_album_title.clone();
-    let check_button_music_artist: gtk::CheckButton = gui_data.main_notebook.check_button_music_artist.clone();
-    let check_button_music_title: gtk::CheckButton = gui_data.main_notebook.check_button_music_title.clone();
-    let check_button_music_year: gtk::CheckButton = gui_data.main_notebook.check_button_music_year.clone();
+    let check_button_duplicate_case_sensitive_name: gtk4::CheckButton = gui_data.main_notebook.check_button_duplicate_case_sensitive_name.clone();
+    let check_button_music_artist: gtk4::CheckButton = gui_data.main_notebook.check_button_music_artist.clone();
+    let check_button_music_title: gtk4::CheckButton = gui_data.main_notebook.check_button_music_title.clone();
+    let check_button_music_year: gtk4::CheckButton = gui_data.main_notebook.check_button_music_year.clone();
+    let check_button_music_genre: gtk4::CheckButton = gui_data.main_notebook.check_button_music_genre.clone();
+    let check_button_music_length: gtk4::CheckButton = gui_data.main_notebook.check_button_music_length.clone();
+    let check_button_music_bitrate: gtk4::CheckButton = gui_data.main_notebook.check_button_music_bitrate.clone();
+    let check_button_broken_files_archive: gtk4::CheckButton = gui_data.main_notebook.check_button_broken_files_archive.clone();
+    let check_button_broken_files_pdf: gtk4::CheckButton = gui_data.main_notebook.check_button_broken_files_pdf.clone();
+    let check_button_broken_files_audio: gtk4::CheckButton = gui_data.main_notebook.check_button_broken_files_audio.clone();
+    let check_button_broken_files_image: gtk4::CheckButton = gui_data.main_notebook.check_button_broken_files_image.clone();
     let check_button_recursive = gui_data.upper_notebook.check_button_recursive.clone();
     let check_button_settings_duplicates_delete_outdated_cache = gui_data.settings.check_button_settings_duplicates_delete_outdated_cache.clone();
     let check_button_settings_hide_hard_links = gui_data.settings.check_button_settings_hide_hard_links.clone();
@@ -97,15 +108,22 @@ pub fn connect_button_search(
     let tree_view_similar_images_finder = gui_data.main_notebook.tree_view_similar_images_finder.clone();
     let tree_view_similar_videos_finder = gui_data.main_notebook.tree_view_similar_videos_finder.clone();
     let tree_view_temporary_files_finder = gui_data.main_notebook.tree_view_temporary_files_finder.clone();
+    let tree_view_bad_extensions = gui_data.main_notebook.tree_view_bad_extensions.clone();
     let window_progress = gui_data.progress_window.window_progress.clone();
     let entry_info = gui_data.entry_info.clone();
     let button_settings = gui_data.header.button_settings.clone();
     let button_app_info = gui_data.header.button_app_info.clone();
     let check_button_music_approximate_comparison = gui_data.main_notebook.check_button_music_approximate_comparison.clone();
-    let check_button_image_fast_compare = gui_data.main_notebook.check_button_image_fast_compare.clone();
     let check_button_settings_save_also_json = gui_data.settings.check_button_settings_save_also_json.clone();
 
     buttons_search_clone.connect_clicked(move |_| {
+        // Check if user selected all referenced folders
+        let list_store_included_directories = get_list_store(&tree_view_included_directories);
+        if check_if_list_store_column_have_all_same_values(&list_store_included_directories, ColumnsIncludedDirectory::ReferenceButton as i32, true) {
+            entry_info.set_text(&flg!("selected_all_reference_folders"));
+            return;
+        }
+
         let included_directories = get_path_buf_from_vector_of_strings(get_string_from_list_store(&tree_view_included_directories, ColumnsIncludedDirectory::Path as i32, None));
         let excluded_directories = get_path_buf_from_vector_of_strings(get_string_from_list_store(&tree_view_excluded_directories, ColumnsExcludedDirectory::Path as i32, None));
         let reference_directories = get_path_buf_from_vector_of_strings(get_string_from_list_store(
@@ -137,6 +155,9 @@ pub fn connect_button_search(
             .unwrap_or_else(|_| DEFAULT_MAXIMAL_FILE_SIZE.parse::<u64>().unwrap());
 
         let show_dialog = Arc::new(AtomicBool::new(true));
+        let ignore_other_filesystems = check_button_settings_one_filesystem.is_active();
+
+        window_progress.set_title(Some(&flg!("window_progress_title")));
 
         hide_all_buttons(&buttons_array);
 
@@ -155,14 +176,16 @@ pub fn connect_button_search(
 
         let glib_stop_sender = glib_stop_sender.clone();
         let stop_receiver = stop_receiver.clone();
+        // Consume any stale stop messages.
+        stop_receiver.try_iter().for_each(|_| ());
 
         match to_notebook_main_enum(notebook_main.current_page().unwrap()) {
             NotebookMainEnum::Duplicate => {
                 image_preview_duplicates.hide();
 
                 label_stage.show();
-                grid_progress_stages.show_all();
-                window_progress.resize(1, 1);
+                grid_progress_stages.show();
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_duplicate_finder).clear();
 
@@ -174,6 +197,8 @@ pub fn connect_button_search(
 
                 let use_prehash_cache = check_button_duplicates_use_prehash_cache.is_active();
                 let minimal_prehash_cache_file_size = entry_settings_prehash_cache_file_minimal_size.text().as_str().parse::<u64>().unwrap_or(0);
+
+                let case_sensitive_name_comparison = check_button_duplicate_case_sensitive_name.is_active();
 
                 let delete_outdated_cache = check_button_settings_duplicates_delete_outdated_cache.is_active();
 
@@ -197,6 +222,8 @@ pub fn connect_button_search(
                     df.set_use_cache(use_cache);
                     df.set_use_prehash_cache(use_prehash_cache);
                     df.set_delete_outdated_cache(delete_outdated_cache);
+                    df.set_case_sensitive_name_comparison(case_sensitive_name_comparison);
+                    df.set_exclude_other_filesystems(ignore_other_filesystems);
                     df.find_duplicates(Some(&stop_receiver), Some(&futures_sender_duplicate_files));
                     let _ = glib_stop_sender.send(Message::Duplicates(df));
                 });
@@ -204,7 +231,7 @@ pub fn connect_button_search(
             NotebookMainEnum::EmptyFiles => {
                 label_stage.show();
                 grid_progress_stages.hide();
-                window_progress.resize(1, 1);
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_empty_files_finder).clear();
 
@@ -218,6 +245,7 @@ pub fn connect_button_search(
                     vf.set_recursive_search(recursive_search);
                     vf.set_excluded_items(excluded_items);
                     vf.set_allowed_extensions(allowed_extensions);
+                    vf.set_exclude_other_filesystems(ignore_other_filesystems);
                     vf.find_empty_files(Some(&stop_receiver), Some(&futures_sender_empty_files));
                     let _ = glib_stop_sender.send(Message::EmptyFiles(vf));
                 });
@@ -225,7 +253,7 @@ pub fn connect_button_search(
             NotebookMainEnum::EmptyDirectories => {
                 label_stage.show();
                 grid_progress_stages.hide();
-                window_progress.resize(1, 1);
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_empty_folder_finder).clear();
 
@@ -236,6 +264,7 @@ pub fn connect_button_search(
                     ef.set_included_directory(included_directories);
                     ef.set_excluded_directory(excluded_directories);
                     ef.set_excluded_items(excluded_items);
+                    ef.set_exclude_other_filesystems(ignore_other_filesystems);
                     ef.find_empty_folders(Some(&stop_receiver), Some(&futures_sender_empty_folder));
                     let _ = glib_stop_sender.send(Message::EmptyFolders(ef));
                 });
@@ -243,9 +272,12 @@ pub fn connect_button_search(
             NotebookMainEnum::BigFiles => {
                 label_stage.show();
                 grid_progress_stages.hide();
-                window_progress.resize(1, 1);
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_big_files_finder).clear();
+
+                let big_files_mode_index = combo_box_big_files_mode.active().unwrap() as usize;
+                let big_files_mode = BIG_FILES_CHECK_METHOD_COMBO_BOX[big_files_mode_index].check_method;
 
                 let numbers_of_files_to_check = entry_big_files_number.text().as_str().parse::<usize>().unwrap_or(50);
 
@@ -260,6 +292,8 @@ pub fn connect_button_search(
                     bf.set_excluded_items(excluded_items);
                     bf.set_allowed_extensions(allowed_extensions);
                     bf.set_number_of_files_to_check(numbers_of_files_to_check);
+                    bf.set_search_mode(big_files_mode);
+                    bf.set_exclude_other_filesystems(ignore_other_filesystems);
                     bf.find_big_files(Some(&stop_receiver), Some(&futures_sender_big_file));
                     let _ = glib_stop_sender.send(Message::BigFiles(bf));
                 });
@@ -267,7 +301,7 @@ pub fn connect_button_search(
             NotebookMainEnum::Temporary => {
                 label_stage.show();
                 grid_progress_stages.hide();
-                window_progress.resize(1, 1);
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_temporary_files_finder).clear();
 
@@ -280,6 +314,7 @@ pub fn connect_button_search(
                     tf.set_excluded_directory(excluded_directories);
                     tf.set_recursive_search(recursive_search);
                     tf.set_excluded_items(excluded_items);
+                    tf.set_exclude_other_filesystems(ignore_other_filesystems);
                     tf.find_temporary_files(Some(&stop_receiver), Some(&futures_sender_temporary));
                     let _ = glib_stop_sender.send(Message::Temporary(tf));
                 });
@@ -288,8 +323,8 @@ pub fn connect_button_search(
                 image_preview_similar_images.hide();
 
                 label_stage.show();
-                grid_progress_stages.show_all();
-                window_progress.resize(1, 1);
+                grid_progress_stages.show();
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_similar_images_finder).clear();
 
@@ -304,11 +339,9 @@ pub fn connect_button_search(
 
                 let ignore_same_size = check_button_image_ignore_same_size.is_active();
 
-                let similarity = similar_images::Similarity::Similar(scale_similarity_similar_images.value() as u32);
+                let similarity = scale_similarity_similar_images.value() as u32;
 
                 let delete_outdated_cache = check_button_settings_similar_images_delete_outdated_cache.is_active();
-
-                let fast_compare = check_button_image_fast_compare.is_active();
 
                 let futures_sender_similar_images = futures_sender_similar_images.clone();
                 // Find similar images
@@ -330,16 +363,16 @@ pub fn connect_button_search(
                     sf.set_allowed_extensions(allowed_extensions);
                     sf.set_delete_outdated_cache(delete_outdated_cache);
                     sf.set_exclude_images_with_same_size(ignore_same_size);
-                    sf.set_fast_comparing(fast_compare);
                     sf.set_save_also_as_json(save_also_as_json);
+                    sf.set_exclude_other_filesystems(ignore_other_filesystems);
                     sf.find_similar_images(Some(&stop_receiver), Some(&futures_sender_similar_images));
                     let _ = glib_stop_sender.send(Message::SimilarImages(sf));
                 });
             }
             NotebookMainEnum::SimilarVideos => {
                 label_stage.show();
-                grid_progress_stages.show_all();
-                window_progress.resize(1, 1);
+                grid_progress_stages.show();
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_similar_videos_finder).clear();
 
@@ -367,14 +400,15 @@ pub fn connect_button_search(
                     sf.set_delete_outdated_cache(delete_outdated_cache);
                     sf.set_exclude_videos_with_same_size(ignore_same_size);
                     sf.set_save_also_as_json(save_also_as_json);
+                    sf.set_exclude_other_filesystems(ignore_other_filesystems);
                     sf.find_similar_videos(Some(&stop_receiver), Some(&futures_sender_similar_videos));
                     let _ = glib_stop_sender.send(Message::SimilarVideos(sf));
                 });
             }
             NotebookMainEnum::SameMusic => {
                 label_stage.show();
-                grid_progress_stages.show_all();
-                window_progress.resize(1, 1);
+                grid_progress_stages.show();
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_same_music_finder).clear();
 
@@ -383,19 +417,22 @@ pub fn connect_button_search(
                 let mut music_similarity: MusicSimilarity = MusicSimilarity::NONE;
 
                 if check_button_music_title.is_active() {
-                    music_similarity |= MusicSimilarity::TITLE;
+                    music_similarity |= MusicSimilarity::TRACK_TITLE;
                 }
                 if check_button_music_artist.is_active() {
-                    music_similarity |= MusicSimilarity::ARTIST;
-                }
-                if check_button_music_album_title.is_active() {
-                    music_similarity |= MusicSimilarity::ALBUM_TITLE;
-                }
-                if check_button_music_album_artist.is_active() {
-                    music_similarity |= MusicSimilarity::ALBUM_ARTIST;
+                    music_similarity |= MusicSimilarity::TRACK_ARTIST;
                 }
                 if check_button_music_year.is_active() {
                     music_similarity |= MusicSimilarity::YEAR;
+                }
+                if check_button_music_bitrate.is_active() {
+                    music_similarity |= MusicSimilarity::BITRATE;
+                }
+                if check_button_music_genre.is_active() {
+                    music_similarity |= MusicSimilarity::GENRE;
+                }
+                if check_button_music_length.is_active() {
+                    music_similarity |= MusicSimilarity::LENGTH;
                 }
 
                 if music_similarity != MusicSimilarity::NONE {
@@ -415,6 +452,7 @@ pub fn connect_button_search(
                         mf.set_music_similarity(music_similarity);
                         mf.set_approximate_comparison(approximate_comparison);
                         mf.set_save_also_as_json(save_also_as_json);
+                        mf.set_exclude_other_filesystems(ignore_other_filesystems);
                         mf.find_same_music(Some(&stop_receiver), Some(&futures_sender_same_music));
                         let _ = glib_stop_sender.send(Message::SameMusic(mf));
                     });
@@ -426,12 +464,17 @@ pub fn connect_button_search(
                     );
                     entry_info.set_text(&flg!("search_not_choosing_any_music"));
                     show_dialog.store(false, Ordering::Relaxed);
+
+                    notebook_main.set_sensitive(true);
+                    notebook_upper.set_sensitive(true);
+                    button_settings.set_sensitive(true);
+                    button_app_info.set_sensitive(true);
                 }
             }
             NotebookMainEnum::Symlinks => {
                 label_stage.show();
                 grid_progress_stages.hide();
-                window_progress.resize(1, 1);
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_invalid_symlinks).clear();
 
@@ -445,6 +488,7 @@ pub fn connect_button_search(
                     isf.set_recursive_search(recursive_search);
                     isf.set_excluded_items(excluded_items);
                     isf.set_allowed_extensions(allowed_extensions);
+                    isf.set_exclude_other_filesystems(ignore_other_filesystems);
                     isf.find_invalid_links(Some(&stop_receiver), Some(&futures_sender_invalid_symlinks));
                     let _ = glib_stop_sender.send(Message::InvalidSymlinks(isf));
                 });
@@ -452,24 +496,80 @@ pub fn connect_button_search(
             NotebookMainEnum::BrokenFiles => {
                 label_stage.show();
                 grid_progress_stages.show();
-                window_progress.resize(1, 1);
+                window_progress.set_default_size(1, 1);
 
                 get_list_store(&tree_view_broken_files).clear();
 
                 let futures_sender_broken_files = futures_sender_broken_files.clone();
 
-                thread::spawn(move || {
-                    let mut br = BrokenFiles::new();
+                let mut checked_types: CheckedTypes = CheckedTypes::NONE;
 
-                    br.set_included_directory(included_directories);
-                    br.set_excluded_directory(excluded_directories);
-                    br.set_recursive_search(recursive_search);
-                    br.set_excluded_items(excluded_items);
-                    br.set_use_cache(use_cache);
-                    br.set_allowed_extensions(allowed_extensions);
-                    br.set_save_also_as_json(save_also_as_json);
-                    br.find_broken_files(Some(&stop_receiver), Some(&futures_sender_broken_files));
-                    let _ = glib_stop_sender.send(Message::BrokenFiles(br));
+                if check_button_broken_files_audio.is_active() {
+                    checked_types |= CheckedTypes::AUDIO;
+                }
+                if check_button_broken_files_pdf.is_active() {
+                    checked_types |= CheckedTypes::PDF;
+                }
+                if check_button_broken_files_image.is_active() {
+                    checked_types |= CheckedTypes::IMAGE;
+                }
+                if check_button_broken_files_archive.is_active() {
+                    checked_types |= CheckedTypes::ARCHIVE;
+                }
+
+                if checked_types != CheckedTypes::NONE {
+                    thread::spawn(move || {
+                        let mut br = BrokenFiles::new();
+
+                        br.set_included_directory(included_directories);
+                        br.set_excluded_directory(excluded_directories);
+                        br.set_recursive_search(recursive_search);
+                        br.set_excluded_items(excluded_items);
+                        br.set_use_cache(use_cache);
+                        br.set_allowed_extensions(allowed_extensions);
+                        br.set_save_also_as_json(save_also_as_json);
+                        br.set_checked_types(checked_types);
+                        br.set_exclude_other_filesystems(ignore_other_filesystems);
+                        br.find_broken_files(Some(&stop_receiver), Some(&futures_sender_broken_files));
+                        let _ = glib_stop_sender.send(Message::BrokenFiles(br));
+                    });
+                } else {
+                    set_buttons(
+                        &mut *shared_buttons.borrow_mut().get_mut(&NotebookMainEnum::BrokenFiles).unwrap(),
+                        &buttons_array,
+                        &buttons_names,
+                    );
+                    entry_info.set_text(&flg!("search_not_choosing_any_broken_files"));
+                    show_dialog.store(false, Ordering::Relaxed);
+
+                    notebook_main.set_sensitive(true);
+                    notebook_upper.set_sensitive(true);
+                    button_settings.set_sensitive(true);
+                    button_app_info.set_sensitive(true);
+                }
+            }
+            NotebookMainEnum::BadExtensions => {
+                label_stage.show();
+                grid_progress_stages.show();
+                window_progress.set_default_size(1, 1);
+
+                get_list_store(&tree_view_bad_extensions).clear();
+
+                let futures_sender_bad_extensions = futures_sender_bad_extensions.clone();
+                // Find Similar music
+                thread::spawn(move || {
+                    let mut be = BadExtensions::new();
+
+                    be.set_included_directory(included_directories);
+                    be.set_excluded_directory(excluded_directories);
+                    be.set_excluded_items(excluded_items);
+                    be.set_minimal_file_size(minimal_file_size);
+                    be.set_maximal_file_size(maximal_file_size);
+                    be.set_allowed_extensions(allowed_extensions);
+                    be.set_recursive_search(recursive_search);
+                    be.set_exclude_other_filesystems(ignore_other_filesystems);
+                    be.find_bad_extensions_files(Some(&stop_receiver), Some(&futures_sender_bad_extensions));
+                    let _ = glib_stop_sender.send(Message::BadExtensions(be));
                 });
             }
         }

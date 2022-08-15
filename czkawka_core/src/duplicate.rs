@@ -29,6 +29,8 @@ use crate::common_traits::*;
 use crate::flc;
 use crate::localizer_core::generate_translation_hashmap;
 
+const TEMP_HARDLINK_FILE: &str = "rzeczek.rxrxrxl";
+
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
 pub enum HashType {
     Blake3,
@@ -37,6 +39,7 @@ pub enum HashType {
 }
 
 impl HashType {
+    #[inline(always)]
     fn hasher(self: &HashType) -> Box<dyn MyHasher> {
         match self {
             HashType::Blake3 => Box::new(blake3::Hasher::new()),
@@ -101,6 +104,7 @@ pub struct DuplicateFinder {
     minimal_prehash_cache_file_size: u64,
     delete_outdated_cache: bool,
     use_reference_folders: bool,
+    case_sensitive_name_comparison: bool,
 }
 
 impl DuplicateFinder {
@@ -132,6 +136,7 @@ impl DuplicateFinder {
             minimal_prehash_cache_file_size: 0,
             delete_outdated_cache: true,
             use_reference_folders: false,
+            case_sensitive_name_comparison: false,
         }
     }
 
@@ -172,6 +177,10 @@ impl DuplicateFinder {
 
     pub fn set_delete_outdated_cache(&mut self, delete_outdated_cache: bool) {
         self.delete_outdated_cache = delete_outdated_cache;
+    }
+
+    pub fn set_case_sensitive_name_comparison(&mut self, case_sensitive_name_comparison: bool) {
+        self.case_sensitive_name_comparison = case_sensitive_name_comparison;
     }
 
     pub const fn get_check_method(&self) -> &CheckingMethod {
@@ -259,6 +268,13 @@ impl DuplicateFinder {
         self.recursive_search = recursive_search;
     }
 
+    #[cfg(target_family = "unix")]
+    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
+        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
+    }
+    #[cfg(not(target_family = "unix"))]
+    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
+
     pub fn set_included_directory(&mut self, included_directory: Vec<PathBuf>) {
         self.directories.set_included_directory(included_directory, &mut self.text_messages);
     }
@@ -291,9 +307,15 @@ impl DuplicateFinder {
     }
 
     fn check_files_name(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
+        let group_by_func = if self.case_sensitive_name_comparison {
+            |fe: &FileEntry| fe.path.file_name().unwrap().to_string_lossy().to_string()
+        } else {
+            |fe: &FileEntry| fe.path.file_name().unwrap().to_string_lossy().to_lowercase()
+        };
+
         let result = DirTraversalBuilder::new()
             .root_dirs(self.directories.included_directories.clone())
-            .group_by(|fe| fe.path.file_name().unwrap().to_string_lossy().to_string())
+            .group_by(group_by_func)
             .stop_receiver(stop_receiver)
             .progress_sender(progress_sender)
             .checking_method(CheckingMethod::Name)
@@ -468,7 +490,7 @@ impl DuplicateFinder {
                     }
                 }
 
-                Common::print_time(start_time, SystemTime::now(), "check_files_name".to_string());
+                Common::print_time(start_time, SystemTime::now(), "check_files_size".to_string());
                 true
             }
             DirTraversalResult::SuccessFolders { .. } => {
@@ -485,7 +507,7 @@ impl DuplicateFinder {
         let check_type = Arc::new(self.hash_type);
 
         let start_time: SystemTime = SystemTime::now();
-        let check_was_breaked = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
+        let check_was_stopped = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
         let mut pre_checked_map: BTreeMap<u64, Vec<FileEntry>> = Default::default();
 
         //// PROGRESS THREAD START
@@ -549,16 +571,13 @@ impl DuplicateFinder {
                         let name = file_entry.path.to_string_lossy().to_string();
                         if !loaded_hash_map2.contains_key(&name) {
                             // If loaded data doesn't contains current image info
-                            non_cached_files_to_check.entry(file_entry.size).or_insert_with(Vec::new);
-                            non_cached_files_to_check.get_mut(&file_entry.size).unwrap().push(file_entry.clone());
+                            non_cached_files_to_check.entry(file_entry.size).or_insert_with(Vec::new).push(file_entry.clone());
                         } else if file_entry.size != loaded_hash_map2.get(&name).unwrap().size || file_entry.modified_date != loaded_hash_map2.get(&name).unwrap().modified_date {
                             // When size or modification date of image changed, then it is clear that is different image
-                            non_cached_files_to_check.entry(file_entry.size).or_insert_with(Vec::new);
-                            non_cached_files_to_check.get_mut(&file_entry.size).unwrap().push(file_entry.clone());
+                            non_cached_files_to_check.entry(file_entry.size).or_insert_with(Vec::new).push(file_entry.clone());
                         } else {
                             // Checking may be omitted when already there is entry with same size and modification date
-                            records_already_cached.entry(file_entry.size).or_insert_with(Vec::new);
-                            records_already_cached.get_mut(&file_entry.size).unwrap().push(file_entry.clone());
+                            records_already_cached.entry(file_entry.size).or_insert_with(Vec::new).push(file_entry.clone());
                         }
                     }
                 }
@@ -578,13 +597,12 @@ impl DuplicateFinder {
                     atomic_file_counter.fetch_add(vec_file_entry.len(), Ordering::Relaxed);
                     for file_entry in vec_file_entry {
                         if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                            check_was_breaked.store(true, Ordering::Relaxed);
+                            check_was_stopped.store(true, Ordering::Relaxed);
                             return None;
                         }
                         match hash_calculation(&mut buffer, file_entry, &check_type, 0) {
                             Ok(hash_string) => {
-                                hashmap_with_hash.entry(hash_string.clone()).or_insert_with(Vec::new);
-                                hashmap_with_hash.get_mut(hash_string.as_str()).unwrap().push(file_entry.clone());
+                                hashmap_with_hash.entry(hash_string.clone()).or_insert_with(Vec::new).push(file_entry.clone());
                             }
                             Err(s) => errors.push(s),
                         }
@@ -599,14 +617,13 @@ impl DuplicateFinder {
             progress_thread_handle.join().unwrap();
 
             // Check if user aborted search(only from GUI)
-            if check_was_breaked.load(Ordering::Relaxed) {
+            if check_was_stopped.load(Ordering::Relaxed) {
                 return false;
             }
 
             // Add data from cache
             for (size, vec_file_entry) in &records_already_cached {
-                pre_checked_map.entry(*size).or_insert_with(Vec::new);
-                pre_checked_map.get_mut(size).unwrap().append(&mut vec_file_entry.clone());
+                pre_checked_map.entry(*size).or_insert_with(Vec::new).append(&mut vec_file_entry.clone());
             }
 
             // Check results
@@ -614,8 +631,7 @@ impl DuplicateFinder {
                 self.text_messages.warnings.append(&mut errors.clone());
                 for vec_file_entry in hash_map.values() {
                     if vec_file_entry.len() > 1 {
-                        pre_checked_map.entry(*size).or_insert_with(Vec::new);
-                        pre_checked_map.get_mut(size).unwrap().append(&mut vec_file_entry.clone());
+                        pre_checked_map.entry(*size).or_insert_with(Vec::new).append(&mut vec_file_entry.clone());
                     }
                 }
             }
@@ -713,16 +729,14 @@ impl DuplicateFinder {
                             let mut found: bool = false;
                             for loaded_file_entry in loaded_vec_file_entry {
                                 if file_entry.path == loaded_file_entry.path && file_entry.modified_date == loaded_file_entry.modified_date {
-                                    records_already_cached.entry(file_entry.size).or_insert_with(Vec::new);
-                                    records_already_cached.get_mut(&file_entry.size).unwrap().push(loaded_file_entry.clone());
+                                    records_already_cached.entry(file_entry.size).or_insert_with(Vec::new).push(loaded_file_entry.clone());
                                     found = true;
                                     break;
                                 }
                             }
 
                             if !found {
-                                non_cached_files_to_check.entry(file_entry.size).or_insert_with(Vec::new);
-                                non_cached_files_to_check.get_mut(&file_entry.size).unwrap().push(file_entry);
+                                non_cached_files_to_check.entry(file_entry.size).or_insert_with(Vec::new).push(file_entry);
                             }
                         }
                     }
@@ -742,15 +756,14 @@ impl DuplicateFinder {
                     atomic_file_counter.fetch_add(vec_file_entry.len(), Ordering::Relaxed);
                     for mut file_entry in vec_file_entry {
                         if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                            check_was_breaked.store(true, Ordering::Relaxed);
+                            check_was_stopped.store(true, Ordering::Relaxed);
                             return None;
                         }
 
                         match hash_calculation(&mut buffer, &file_entry, &check_type, u64::MAX) {
                             Ok(hash_string) => {
                                 file_entry.hash = hash_string.clone();
-                                hashmap_with_hash.entry(hash_string.clone()).or_insert_with(Vec::new);
-                                hashmap_with_hash.get_mut(hash_string.as_str()).unwrap().push(file_entry);
+                                hashmap_with_hash.entry(hash_string.clone()).or_insert_with(Vec::new).push(file_entry);
                             }
                             Err(s) => errors.push(s),
                         }
@@ -766,8 +779,7 @@ impl DuplicateFinder {
                     for (full_size, full_hashmap, _errors) in &mut full_hash_results {
                         if size == *full_size {
                             for file_entry in vec_file_entry {
-                                full_hashmap.entry(file_entry.hash.clone()).or_insert_with(Vec::new);
-                                full_hashmap.get_mut(&file_entry.hash).unwrap().push(file_entry);
+                                full_hashmap.entry(file_entry.hash.clone()).or_insert_with(Vec::new).push(file_entry);
                             }
                             continue 'main;
                         }
@@ -775,8 +787,7 @@ impl DuplicateFinder {
                     // Size doesn't exists add results to files
                     let mut temp_hashmap: BTreeMap<String, Vec<FileEntry>> = Default::default();
                     for file_entry in vec_file_entry {
-                        temp_hashmap.entry(file_entry.hash.clone()).or_insert_with(Vec::new);
-                        temp_hashmap.get_mut(&file_entry.hash).unwrap().push(file_entry);
+                        temp_hashmap.entry(file_entry.hash.clone()).or_insert_with(Vec::new).push(file_entry);
                     }
                     full_hash_results.push((size, temp_hashmap, Vec::new()));
                 }
@@ -802,8 +813,8 @@ impl DuplicateFinder {
             progress_thread_run.store(false, Ordering::Relaxed);
             progress_thread_handle.join().unwrap();
 
-            // Check if user aborted search(only from GUI)
-            if check_was_breaked.load(Ordering::Relaxed) {
+            // Break if stop was clicked after saving to cache
+            if check_was_stopped.load(Ordering::Relaxed) {
                 return false;
             }
 
@@ -811,8 +822,7 @@ impl DuplicateFinder {
                 self.text_messages.warnings.append(&mut errors);
                 for (_hash, vec_file_entry) in hash_map {
                     if vec_file_entry.len() > 1 {
-                        self.files_with_identical_hashes.entry(size).or_insert_with(Vec::new);
-                        self.files_with_identical_hashes.get_mut(&size).unwrap().push(vec_file_entry);
+                        self.files_with_identical_hashes.entry(size).or_insert_with(Vec::new).push(vec_file_entry);
                     }
                 }
             }
@@ -972,6 +982,8 @@ impl DebugPrint for DuplicateFinder {
         println!("Included directories - {:?}", self.directories.included_directories);
         println!("Excluded directories - {:?}", self.directories.excluded_directories);
         println!("Recursive search - {}", self.recursive_search);
+        #[cfg(target_family = "unix")]
+        println!("Skip other filesystems - {}", self.directories.exclude_other_filesystems());
         println!("Minimum file size - {:?}", self.minimal_file_size);
         println!("Checking Method - {:?}", self.check_method);
         println!("Delete Method - {:?}", self.delete_method);
@@ -1249,12 +1261,13 @@ fn filter_hard_links(vec_file_entry: &[FileEntry]) -> Vec<FileEntry> {
 
 pub fn make_hard_link(src: &Path, dst: &Path) -> io::Result<()> {
     let dst_dir = dst.parent().ok_or_else(|| Error::new(ErrorKind::Other, "No parent"))?;
-    let temp = tempfile::Builder::new().tempfile_in(dst_dir)?;
-    fs::rename(dst, temp.path())?;
+    let temp = dst_dir.join(TEMP_HARDLINK_FILE);
+    fs::rename(dst, temp.as_path())?;
     let result = fs::hard_link(src, dst);
     if result.is_err() {
-        fs::rename(temp.path(), dst)?;
+        fs::rename(temp.as_path(), dst)?;
     }
+    fs::remove_file(temp)?;
     result
 }
 
@@ -1284,6 +1297,7 @@ pub fn save_hashes_to_file(hashmap: &BTreeMap<String, FileEntry>, text_messages:
             .push(flc!("core_saving_to_cache", generate_translation_hashmap(vec![("number", how_much.to_string())])));
     }
 }
+
 pub fn load_hashes_from_file(text_messages: &mut Messages, delete_outdated_cache: bool, type_of_hash: &HashType, is_prehash: bool) -> Option<BTreeMap<u64, Vec<FileEntry>>> {
     if let Some(((file_handler, cache_file), (_json_file, _json_name))) =
         open_cache_folder(&get_file_hash_name(type_of_hash, is_prehash), false, false, &mut text_messages.warnings)
@@ -1351,8 +1365,7 @@ pub fn load_hashes_from_file(text_messages: &mut Messages, delete_outdated_cache
                     hash: uuu[3].to_string(),
                     symlink_info: None,
                 };
-                hashmap_loaded_entries.entry(file_entry.size).or_insert_with(Vec::new);
-                hashmap_loaded_entries.get_mut(&file_entry.size).unwrap().push(file_entry);
+                hashmap_loaded_entries.entry(file_entry.size).or_insert_with(Vec::new).push(file_entry);
             }
         }
 
@@ -1464,7 +1477,7 @@ mod tests {
         assert_eq!(metadata.modified()?, fs::metadata(&src)?.modified()?);
 
         let mut actual = read_dir(&dir)?.map(|e| e.unwrap().path()).collect::<Vec<PathBuf>>();
-        actual.sort();
+        actual.sort_unstable();
         assert_eq!(vec![src, dst], actual);
         Ok(())
     }

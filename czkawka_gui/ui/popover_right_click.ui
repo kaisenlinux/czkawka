@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Created with Cambalache 0.11.2 -->
+<interface>
+  <!-- interface-name popover_right_click.ui -->
+  <requires lib="gtk" version="4.0"/>
+  <object class="GtkPopover" id="popover_right_click">
+    <property name="child">
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <child>
+          <object class="GtkButton" id="buttons_popover_right_click_open_file">
+            <property name="focusable">1</property>
+            <property name="label" translatable="yes">Open File</property>
+            <property name="receives-default">1</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="buttons_popover_right_click_open_folder">
+            <property name="focusable">1</property>
+            <property name="label" translatable="yes">Open Folder</property>
+            <property name="receives-default">1</property>
+          </object>
+        </child>
+      </object>
+    </property>
+    <property name="position">left</property>
+  </object>
+</interface>

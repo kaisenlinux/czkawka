@@ -1,5 +1,6 @@
 #![allow(clippy::collapsible_else_if)]
 #![allow(clippy::type_complexity)]
+#![allow(clippy::needless_late_init)]
 
 #[macro_use]
 extern crate bitflags;
@@ -15,6 +16,7 @@ pub mod similar_images;
 pub mod similar_videos;
 pub mod temporary;
 
+pub mod bad_extensions;
 pub mod common;
 pub mod common_dir_traversal;
 pub mod common_directory;

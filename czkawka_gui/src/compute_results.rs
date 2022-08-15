@@ -5,10 +5,12 @@ use std::rc::Rc;
 
 use chrono::NaiveDateTime;
 use glib::Receiver;
-use gtk::prelude::*;
+use gtk4::prelude::*;
 use humansize::{file_size_opts as options, FileSize};
 
+use czkawka_core::common::split_path;
 use czkawka_core::common_dir_traversal::CheckingMethod;
+use czkawka_core::localizer_core::generate_translation_hashmap;
 use czkawka_core::same_music::MusicSimilarity;
 use czkawka_core::similar_images;
 
@@ -18,7 +20,6 @@ use crate::help_combo_box::IMAGES_HASH_SIZE_COMBO_BOX;
 use crate::help_functions::*;
 use crate::notebook_enums::*;
 use crate::opening_selecting_records::*;
-use czkawka_core::localizer_core::generate_translation_hashmap;
 
 pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<Message>) {
     let combo_box_image_hash_size = gui_data.main_notebook.combo_box_image_hash_size.clone();
@@ -43,9 +44,11 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
     let shared_big_files_state = gui_data.shared_big_files_state.clone();
     let shared_same_invalid_symlinks = gui_data.shared_same_invalid_symlinks.clone();
     let tree_view_temporary_files_finder = gui_data.main_notebook.tree_view_temporary_files_finder.clone();
+    let tree_view_bad_extensions = gui_data.main_notebook.tree_view_bad_extensions.clone();
     let shared_temporary_files_state = gui_data.shared_temporary_files_state.clone();
     let shared_similar_images_state = gui_data.shared_similar_images_state.clone();
     let shared_similar_videos_state = gui_data.shared_similar_videos_state.clone();
+    let shared_bad_extensions_state = gui_data.shared_bad_extensions_state.clone();
     let tree_view_same_music_finder = gui_data.main_notebook.tree_view_same_music_finder.clone();
     let shared_same_music_state = gui_data.shared_same_music_state.clone();
     let buttons_names = gui_data.bottom_buttons.buttons_names;
@@ -79,9 +82,9 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                     entry_info.set_text(&flg!("compute_stopped_by_user"));
                 } else {
                     if df.get_use_reference() {
-                        tree_view_duplicate_finder.selection().set_select_function(Some(Box::new(select_function_always_true)));
+                        tree_view_duplicate_finder.selection().set_select_function(select_function_always_true);
                     } else {
-                        tree_view_duplicate_finder.selection().set_select_function(Some(Box::new(select_function_duplicates)));
+                        tree_view_duplicate_finder.selection().set_select_function(select_function_duplicates);
                     }
 
                     let information = df.get_information();
@@ -154,7 +157,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         // Sort
                                         let vector = if vector.len() >= 2 {
                                             let mut vector = vector.clone();
-                                            vector.sort_by_key(|e| {
+                                            vector.sort_unstable_by_key(|e| {
                                                 let t = split_path(e.path.as_path());
                                                 (t.0, t.1)
                                             });
@@ -165,7 +168,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                                         // HEADER
                                         let (directory, file) = split_path(&base_file_entry.path);
-                                        let values: [(u32, &dyn ToValue); 9] = [
+                                        let values: [(u32, &dyn ToValue); 10] = [
                                             (ColumnsDuplicates::ActivatableSelectButton as u32, &false),
                                             (ColumnsDuplicates::SelectionButton as u32, &false),
                                             (ColumnsDuplicates::Size as u32, (&base_file_entry.size.file_size(options::BINARY).unwrap())),
@@ -173,14 +176,11 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             (ColumnsDuplicates::Path as u32, &directory),
                                             (
                                                 ColumnsDuplicates::Modification as u32,
-                                                &(format!(
-                                                    "{} - ({})",
-                                                    NaiveDateTime::from_timestamp(base_file_entry.modified_date as i64, 0),
-                                                    base_file_entry.size.file_size(options::BINARY).unwrap()
-                                                )),
+                                                &(NaiveDateTime::from_timestamp(base_file_entry.modified_date as i64, 0).to_string()),
                                             ),
                                             (ColumnsDuplicates::ModificationAsSecs as u32, &(base_file_entry.modified_date)),
                                             (ColumnsDuplicates::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                            (ColumnsDuplicates::IsHeader as u32, &true),
                                             (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                         ];
 
@@ -189,7 +189,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         // MEAT
                                         for entry in vector {
                                             let (directory, file) = split_path(&entry.path);
-                                            let values: [(u32, &dyn ToValue); 9] = [
+                                            let values: [(u32, &dyn ToValue); 10] = [
                                                 (ColumnsDuplicates::ActivatableSelectButton as u32, &true),
                                                 (ColumnsDuplicates::SelectionButton as u32, &false),
                                                 (ColumnsDuplicates::Size as u32, (&entry.size.file_size(options::BINARY).unwrap())),
@@ -197,14 +197,11 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                 (ColumnsDuplicates::Path as u32, &directory),
                                                 (
                                                     ColumnsDuplicates::Modification as u32,
-                                                    &(format!(
-                                                        "{} - ({})",
-                                                        NaiveDateTime::from_timestamp(entry.modified_date as i64, 0),
-                                                        entry.size.file_size(options::BINARY).unwrap()
-                                                    )),
+                                                    &(NaiveDateTime::from_timestamp(entry.modified_date as i64, 0).to_string()),
                                                 ),
                                                 (ColumnsDuplicates::ModificationAsSecs as u32, &(entry.modified_date)),
                                                 (ColumnsDuplicates::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                                (ColumnsDuplicates::IsHeader as u32, &false),
                                                 (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                             ];
                                             list_store.set(&list_store.append(), &values);
@@ -219,7 +216,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             // Sort
                                             let vector = if vector.len() >= 2 {
                                                 let mut vector = vector.clone();
-                                                vector.sort_by_key(|e| {
+                                                vector.sort_unstable_by_key(|e| {
                                                     let t = split_path(e.path.as_path());
                                                     (t.0, t.1)
                                                 });
@@ -230,7 +227,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                                             // HEADER
                                             let (directory, file) = split_path(&base_file_entry.path);
-                                            let values: [(u32, &dyn ToValue); 9] = [
+                                            let values: [(u32, &dyn ToValue); 10] = [
                                                 (ColumnsDuplicates::ActivatableSelectButton as u32, &false),
                                                 (ColumnsDuplicates::SelectionButton as u32, &false),
                                                 (ColumnsDuplicates::Size as u32, (&base_file_entry.size.file_size(options::BINARY).unwrap())),
@@ -242,6 +239,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                 ),
                                                 (ColumnsDuplicates::ModificationAsSecs as u32, &(base_file_entry.modified_date)),
                                                 (ColumnsDuplicates::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                                (ColumnsDuplicates::IsHeader as u32, &true),
                                                 (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                             ];
 
@@ -250,7 +248,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             for entry in vector {
                                                 let (directory, file) = split_path(&entry.path);
 
-                                                let values: [(u32, &dyn ToValue); 9] = [
+                                                let values: [(u32, &dyn ToValue); 10] = [
                                                     (ColumnsDuplicates::ActivatableSelectButton as u32, &true),
                                                     (ColumnsDuplicates::SelectionButton as u32, &false),
                                                     (ColumnsDuplicates::Size as u32, (&entry.size.file_size(options::BINARY).unwrap())),
@@ -262,6 +260,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                     ),
                                                     (ColumnsDuplicates::ModificationAsSecs as u32, &(entry.modified_date)),
                                                     (ColumnsDuplicates::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                                    (ColumnsDuplicates::IsHeader as u32, &false),
                                                     (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                                 ];
 
@@ -277,7 +276,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         // Sort
                                         let vector = if vector.len() >= 2 {
                                             let mut vector = vector.clone();
-                                            vector.sort_by_key(|e| {
+                                            vector.sort_unstable_by_key(|e| {
                                                 let t = split_path(e.path.as_path());
                                                 (t.0, t.1)
                                             });
@@ -288,7 +287,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                                         // HEADER
                                         let (directory, file) = split_path(&base_file_entry.path);
-                                        let values: [(u32, &dyn ToValue); 9] = [
+                                        let values: [(u32, &dyn ToValue); 10] = [
                                             (ColumnsDuplicates::ActivatableSelectButton as u32, &false),
                                             (ColumnsDuplicates::SelectionButton as u32, &false),
                                             (ColumnsDuplicates::Size as u32, (&base_file_entry.size.file_size(options::BINARY).unwrap())),
@@ -300,6 +299,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             ),
                                             (ColumnsDuplicates::ModificationAsSecs as u32, &(base_file_entry.modified_date)),
                                             (ColumnsDuplicates::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                            (ColumnsDuplicates::IsHeader as u32, &true),
                                             (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                         ];
 
@@ -307,7 +307,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         list_store.set(&list_store.append(), &values);
                                         for entry in vector {
                                             let (directory, file) = split_path(&entry.path);
-                                            let values: [(u32, &dyn ToValue); 9] = [
+                                            let values: [(u32, &dyn ToValue); 10] = [
                                                 (ColumnsDuplicates::ActivatableSelectButton as u32, &true),
                                                 (ColumnsDuplicates::SelectionButton as u32, &false),
                                                 (ColumnsDuplicates::Size as u32, (&entry.size.file_size(options::BINARY).unwrap())),
@@ -319,6 +319,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                 ),
                                                 (ColumnsDuplicates::ModificationAsSecs as u32, &(entry.modified_date)),
                                                 (ColumnsDuplicates::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                                (ColumnsDuplicates::IsHeader as u32, &false),
                                                 (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                             ];
                                             list_store.set(&list_store.append(), &values);
@@ -338,7 +339,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         // Sort
                                         let vector = if vector.len() >= 2 {
                                             let mut vector = vector.clone();
-                                            vector.sort_by_key(|e| {
+                                            vector.sort_unstable_by_key(|e| {
                                                 let t = split_path(e.path.as_path());
                                                 (t.0, t.1)
                                             });
@@ -347,7 +348,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             vector.clone()
                                         };
 
-                                        let values: [(u32, &dyn ToValue); 9] = [
+                                        let values: [(u32, &dyn ToValue); 10] = [
                                             (ColumnsDuplicates::ActivatableSelectButton as u32, &false),
                                             (ColumnsDuplicates::SelectionButton as u32, &false),
                                             (ColumnsDuplicates::Size as u32, (&"".to_string())),
@@ -356,13 +357,14 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             (ColumnsDuplicates::Modification as u32, (&"".to_string())), // No text in 3 column
                                             (ColumnsDuplicates::ModificationAsSecs as u32, (&(0))),      // Not used here
                                             (ColumnsDuplicates::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                            (ColumnsDuplicates::IsHeader as u32, &true),
                                             (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                         ];
 
                                         list_store.set(&list_store.append(), &values);
                                         for entry in vector {
                                             let (directory, file) = split_path(&entry.path);
-                                            let values: [(u32, &dyn ToValue); 9] = [
+                                            let values: [(u32, &dyn ToValue); 10] = [
                                                 (ColumnsDuplicates::ActivatableSelectButton as u32, &true),
                                                 (ColumnsDuplicates::SelectionButton as u32, &false),
                                                 (ColumnsDuplicates::Size as u32, (&entry.size.file_size(options::BINARY).unwrap())),
@@ -378,6 +380,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                 ),
                                                 (ColumnsDuplicates::ModificationAsSecs as u32, &(entry.modified_date)),
                                                 (ColumnsDuplicates::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                                (ColumnsDuplicates::IsHeader as u32, &false),
                                                 (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                             ];
                                             list_store.set(&list_store.append(), &values);
@@ -392,7 +395,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             // Sort
                                             let vector = if vector.len() >= 2 {
                                                 let mut vector = vector.clone();
-                                                vector.sort_by_key(|e| {
+                                                vector.sort_unstable_by_key(|e| {
                                                     let t = split_path(e.path.as_path());
                                                     (t.0, t.1)
                                                 });
@@ -401,7 +404,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                 vector.clone()
                                             };
 
-                                            let values: [(u32, &dyn ToValue); 9] = [
+                                            let values: [(u32, &dyn ToValue); 10] = [
                                                 (ColumnsDuplicates::ActivatableSelectButton as u32, &false),
                                                 (ColumnsDuplicates::SelectionButton as u32, &false),
                                                 (ColumnsDuplicates::Size as u32, (&"".to_string())),
@@ -410,6 +413,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                 (ColumnsDuplicates::Modification as u32, &"".to_string()), // No text in 3 column
                                                 (ColumnsDuplicates::ModificationAsSecs as u32, &(0)),
                                                 (ColumnsDuplicates::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                                (ColumnsDuplicates::IsHeader as u32, &true),
                                                 (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                             ];
 
@@ -417,7 +421,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             for entry in vector {
                                                 let (directory, file) = split_path(&entry.path);
 
-                                                let values: [(u32, &dyn ToValue); 9] = [
+                                                let values: [(u32, &dyn ToValue); 10] = [
                                                     (ColumnsDuplicates::ActivatableSelectButton as u32, &true),
                                                     (ColumnsDuplicates::SelectionButton as u32, &false),
                                                     (ColumnsDuplicates::Size as u32, (&entry.size.file_size(options::BINARY).unwrap())),
@@ -429,6 +433,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                     ),
                                                     (ColumnsDuplicates::ModificationAsSecs as u32, &(entry.modified_date)),
                                                     (ColumnsDuplicates::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                                    (ColumnsDuplicates::IsHeader as u32, &false),
                                                     (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                                 ];
 
@@ -444,7 +449,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         // Sort
                                         let vector = if vector.len() >= 2 {
                                             let mut vector = vector.clone();
-                                            vector.sort_by_key(|e| {
+                                            vector.sort_unstable_by_key(|e| {
                                                 let t = split_path(e.path.as_path());
                                                 (t.0, t.1)
                                             });
@@ -452,7 +457,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         } else {
                                             vector.clone()
                                         };
-                                        let values: [(u32, &dyn ToValue); 9] = [
+                                        let values: [(u32, &dyn ToValue); 10] = [
                                             (ColumnsDuplicates::ActivatableSelectButton as u32, &false),
                                             (ColumnsDuplicates::SelectionButton as u32, &false),
                                             (ColumnsDuplicates::Size as u32, (&"".to_string())),
@@ -461,13 +466,14 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             (ColumnsDuplicates::Modification as u32, &"".to_string()), // No text in 3 column
                                             (ColumnsDuplicates::ModificationAsSecs as u32, &(0)),      // Not used here
                                             (ColumnsDuplicates::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                            (ColumnsDuplicates::IsHeader as u32, &true),
                                             (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                         ];
 
                                         list_store.set(&list_store.append(), &values);
                                         for entry in vector {
                                             let (directory, file) = split_path(&entry.path);
-                                            let values: [(u32, &dyn ToValue); 9] = [
+                                            let values: [(u32, &dyn ToValue); 10] = [
                                                 (ColumnsDuplicates::ActivatableSelectButton as u32, &true),
                                                 (ColumnsDuplicates::SelectionButton as u32, &false),
                                                 (ColumnsDuplicates::Size as u32, (&entry.size.file_size(options::BINARY).unwrap())),
@@ -479,6 +485,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                                 ),
                                                 (ColumnsDuplicates::ModificationAsSecs as u32, &(entry.modified_date)),
                                                 (ColumnsDuplicates::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                                (ColumnsDuplicates::IsHeader as u32, &false),
                                                 (ColumnsDuplicates::TextColor as u32, &(TEXT_COLOR.to_string())),
                                             ];
                                             list_store.set(&list_store.append(), &values);
@@ -543,7 +550,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                         let hashmap = ef.get_empty_folder_list();
                         let mut vector = hashmap.keys().cloned().collect::<Vec<PathBuf>>();
 
-                        vector.sort_by_key(|e| {
+                        vector.sort_unstable_by_key(|e| {
                             let t = split_path(e.as_path());
                             (t.0, t.1)
                         });
@@ -609,7 +616,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                         // Sort
                         let mut vector = vector.clone();
-                        vector.sort_by_key(|e| {
+                        vector.sort_unstable_by_key(|e| {
                             let t = split_path(e.path.as_path());
                             (t.0, t.1)
                         });
@@ -671,30 +678,23 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                     {
                         let list_store = get_list_store(&tree_view_big_files_finder);
 
-                        let btreemap = bf.get_big_files();
+                        let vector = bf.get_big_files();
 
-                        for (size, vector) in btreemap.iter().rev() {
-                            let mut vector = vector.clone();
-                            vector.sort_by_key(|e| {
-                                let t = split_path(e.path.as_path());
-                                (t.0, t.1)
-                            });
-                            for file_entry in vector {
-                                let (directory, file) = split_path(&file_entry.path);
-                                let values: [(u32, &dyn ToValue); 7] = [
-                                    (ColumnsBigFiles::SelectionButton as u32, &false),
-                                    (ColumnsBigFiles::Size as u32, &(size.file_size(options::BINARY).unwrap())),
-                                    (ColumnsBigFiles::Name as u32, &file),
-                                    (ColumnsBigFiles::Path as u32, &directory),
-                                    (
-                                        ColumnsBigFiles::Modification as u32,
-                                        &(NaiveDateTime::from_timestamp(file_entry.modified_date as i64, 0).to_string()),
-                                    ),
-                                    (ColumnsBigFiles::ModificationAsSecs as u32, &(file_entry.modified_date as i64)),
-                                    (ColumnsBigFiles::SizeAsBytes as u32, &(size)),
-                                ];
-                                list_store.set(&list_store.append(), &values);
-                            }
+                        for (size, file_entry) in vector.iter() {
+                            let (directory, file) = split_path(&file_entry.path);
+                            let values: [(u32, &dyn ToValue); 7] = [
+                                (ColumnsBigFiles::SelectionButton as u32, &false),
+                                (ColumnsBigFiles::Size as u32, &(size.file_size(options::BINARY).unwrap())),
+                                (ColumnsBigFiles::Name as u32, &file),
+                                (ColumnsBigFiles::Path as u32, &directory),
+                                (
+                                    ColumnsBigFiles::Modification as u32,
+                                    &(NaiveDateTime::from_timestamp(file_entry.modified_date as i64, 0).to_string()),
+                                ),
+                                (ColumnsBigFiles::ModificationAsSecs as u32, &(file_entry.modified_date as i64)),
+                                (ColumnsBigFiles::SizeAsBytes as u32, &(size)),
+                            ];
+                            list_store.set(&list_store.append(), &values);
                         }
                         print_text_messages_to_text_view(text_messages, &text_view_errors);
                     }
@@ -742,7 +742,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                         // Sort
                         let mut vector = vector.clone();
-                        vector.sort_by_key(|e| {
+                        vector.sort_unstable_by_key(|e| {
                             let t = split_path(e.path.as_path());
                             (t.0, t.1)
                         });
@@ -788,11 +788,9 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                     entry_info.set_text(&flg!("compute_stopped_by_user"));
                 } else {
                     if sf.get_use_reference() {
-                        tree_view_similar_images_finder.selection().set_select_function(Some(Box::new(select_function_always_true)));
+                        tree_view_similar_images_finder.selection().set_select_function(select_function_always_true);
                     } else {
-                        tree_view_similar_images_finder
-                            .selection()
-                            .set_select_function(Some(Box::new(select_function_similar_images)));
+                        tree_view_similar_images_finder.selection().set_select_function(select_function_similar_images);
                     }
                     let information = sf.get_information();
                     let text_messages = sf.get_text_messages();
@@ -815,16 +813,13 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                         let list_store = get_list_store(&tree_view_similar_images_finder);
 
                         if sf.get_use_reference() {
-                            let vec_struct_similar: &Vec<(czkawka_core::similar_images::FileEntry, Vec<czkawka_core::similar_images::FileEntry>)> =
-                                sf.get_similar_images_referenced();
+                            let vec_struct_similar: &Vec<(similar_images::FileEntry, Vec<similar_images::FileEntry>)> = sf.get_similar_images_referenced();
                             for (base_file_entry, vec_file_entry) in vec_struct_similar.iter() {
                                 // Sort
                                 let vec_file_entry = if vec_file_entry.len() >= 2 {
                                     let mut vec_file_entry = vec_file_entry.clone();
-                                    vec_file_entry.sort_by_key(|e| {
-                                        let t = split_path(e.path.as_path());
-                                        (t.0, t.1)
-                                    });
+                                    // Use comparison by similarity, because it is more important that path here
+                                    vec_file_entry.sort_unstable_by_key(|e| e.similarity);
                                     vec_file_entry
                                 } else {
                                     vec_file_entry.clone()
@@ -832,7 +827,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                                 // Header
                                 let (directory, file) = split_path(&base_file_entry.path);
-                                let values: [(u32, &dyn ToValue); 12] = [
+                                let values: [(u32, &dyn ToValue); 13] = [
                                     (ColumnsSimilarImages::ActivatableSelectButton as u32, &false),
                                     (ColumnsSimilarImages::SelectionButton as u32, &false),
                                     (ColumnsSimilarImages::Similarity as u32, &"".to_string()),
@@ -847,6 +842,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                     ),
                                     (ColumnsSimilarImages::ModificationAsSecs as u32, &(base_file_entry.modified_date)),
                                     (ColumnsSimilarImages::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                    (ColumnsSimilarImages::IsHeader as u32, &true),
                                     (ColumnsSimilarImages::TextColor as u32, &(TEXT_COLOR.to_string())),
                                 ];
                                 list_store.set(&list_store.append(), &values);
@@ -854,7 +850,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Meat
                                 for file_entry in vec_file_entry.iter() {
                                     let (directory, file) = split_path(&file_entry.path);
-                                    let values: [(u32, &dyn ToValue); 12] = [
+                                    let values: [(u32, &dyn ToValue); 13] = [
                                         (ColumnsSimilarImages::ActivatableSelectButton as u32, &true),
                                         (ColumnsSimilarImages::SelectionButton as u32, &false),
                                         (
@@ -872,6 +868,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         ),
                                         (ColumnsSimilarImages::ModificationAsSecs as u32, &(file_entry.modified_date)),
                                         (ColumnsSimilarImages::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                        (ColumnsSimilarImages::IsHeader as u32, &false),
                                         (ColumnsSimilarImages::TextColor as u32, &(TEXT_COLOR.to_string())),
                                     ];
                                     list_store.set(&list_store.append(), &values);
@@ -883,17 +880,15 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Sort
                                 let vec_file_entry = if vec_file_entry.len() >= 2 {
                                     let mut vec_file_entry = vec_file_entry.clone();
-                                    vec_file_entry.sort_by_key(|e| {
-                                        let t = split_path(e.path.as_path());
-                                        (t.0, t.1)
-                                    });
+                                    // Use comparsion by similarity, because it is more important that path here
+                                    vec_file_entry.sort_unstable_by_key(|e| e.similarity);
                                     vec_file_entry
                                 } else {
                                     vec_file_entry.clone()
                                 };
 
                                 // Header
-                                let values: [(u32, &dyn ToValue); 12] = [
+                                let values: [(u32, &dyn ToValue); 13] = [
                                     (ColumnsSimilarImages::ActivatableSelectButton as u32, &false),
                                     (ColumnsSimilarImages::SelectionButton as u32, &false),
                                     (ColumnsSimilarImages::Similarity as u32, &"".to_string()),
@@ -905,6 +900,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                     (ColumnsSimilarImages::Modification as u32, &"".to_string()),
                                     (ColumnsSimilarImages::ModificationAsSecs as u32, &(0)),
                                     (ColumnsSimilarImages::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                    (ColumnsSimilarImages::IsHeader as u32, &true),
                                     (ColumnsSimilarImages::TextColor as u32, &(TEXT_COLOR.to_string())),
                                 ];
                                 list_store.set(&list_store.append(), &values);
@@ -912,7 +908,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Meat
                                 for file_entry in vec_file_entry.iter() {
                                     let (directory, file) = split_path(&file_entry.path);
-                                    let values: [(u32, &dyn ToValue); 12] = [
+                                    let values: [(u32, &dyn ToValue); 13] = [
                                         (ColumnsSimilarImages::ActivatableSelectButton as u32, &true),
                                         (ColumnsSimilarImages::SelectionButton as u32, &false),
                                         (
@@ -930,6 +926,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         ),
                                         (ColumnsSimilarImages::ModificationAsSecs as u32, &(file_entry.modified_date)),
                                         (ColumnsSimilarImages::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                        (ColumnsSimilarImages::IsHeader as u32, &false),
                                         (ColumnsSimilarImages::TextColor as u32, &(TEXT_COLOR.to_string())),
                                     ];
                                     list_store.set(&list_store.append(), &values);
@@ -972,11 +969,9 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                     entry_info.set_text(&flg!("compute_stopped_by_user"));
                 } else {
                     if ff.get_use_reference() {
-                        tree_view_similar_videos_finder.selection().set_select_function(Some(Box::new(select_function_always_true)));
+                        tree_view_similar_videos_finder.selection().set_select_function(select_function_always_true);
                     } else {
-                        tree_view_similar_videos_finder
-                            .selection()
-                            .set_select_function(Some(Box::new(select_function_similar_videos)));
+                        tree_view_similar_videos_finder.selection().set_select_function(select_function_similar_videos);
                     }
                     let information = ff.get_information();
                     let text_messages = ff.get_text_messages();
@@ -1004,7 +999,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Sort
                                 let vec_file_entry = if vec_file_entry.len() >= 2 {
                                     let mut vec_file_entry = vec_file_entry.clone();
-                                    vec_file_entry.sort_by_key(|e| {
+                                    vec_file_entry.sort_unstable_by_key(|e| {
                                         let t = split_path(e.path.as_path());
                                         (t.0, t.1)
                                     });
@@ -1015,7 +1010,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                                 // Header
                                 let (directory, file) = split_path(&base_file_entry.path);
-                                let values: [(u32, &dyn ToValue); 10] = [
+                                let values: [(u32, &dyn ToValue); 11] = [
                                     (ColumnsSimilarVideos::ActivatableSelectButton as u32, &false),
                                     (ColumnsSimilarVideos::SelectionButton as u32, &false),
                                     (ColumnsSimilarVideos::Size as u32, &base_file_entry.size.file_size(options::BINARY).unwrap()),
@@ -1028,6 +1023,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                     ),
                                     (ColumnsSimilarVideos::ModificationAsSecs as u32, &(base_file_entry.modified_date)),
                                     (ColumnsSimilarVideos::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                    (ColumnsSimilarVideos::IsHeader as u32, &true),
                                     (ColumnsSimilarVideos::TextColor as u32, &(TEXT_COLOR.to_string())),
                                 ];
                                 list_store.set(&list_store.append(), &values);
@@ -1035,7 +1031,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Meat
                                 for file_entry in vec_file_entry.iter() {
                                     let (directory, file) = split_path(&file_entry.path);
-                                    let values: [(u32, &dyn ToValue); 10] = [
+                                    let values: [(u32, &dyn ToValue); 11] = [
                                         (ColumnsSimilarVideos::ActivatableSelectButton as u32, &true),
                                         (ColumnsSimilarVideos::SelectionButton as u32, &false),
                                         (ColumnsSimilarVideos::Size as u32, &file_entry.size.file_size(options::BINARY).unwrap()),
@@ -1048,6 +1044,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         ),
                                         (ColumnsSimilarVideos::ModificationAsSecs as u32, &(file_entry.modified_date)),
                                         (ColumnsSimilarVideos::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                        (ColumnsSimilarVideos::IsHeader as u32, &false),
                                         (ColumnsSimilarVideos::TextColor as u32, &(TEXT_COLOR.to_string())),
                                     ];
                                     list_store.set(&list_store.append(), &values);
@@ -1060,7 +1057,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Sort
                                 let vec_file_entry = if vec_file_entry.len() >= 2 {
                                     let mut vec_file_entry = vec_file_entry.clone();
-                                    vec_file_entry.sort_by_key(|e| {
+                                    vec_file_entry.sort_unstable_by_key(|e| {
                                         let t = split_path(e.path.as_path());
                                         (t.0, t.1)
                                     });
@@ -1070,7 +1067,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 };
 
                                 // Header
-                                let values: [(u32, &dyn ToValue); 10] = [
+                                let values: [(u32, &dyn ToValue); 11] = [
                                     (ColumnsSimilarVideos::ActivatableSelectButton as u32, &false),
                                     (ColumnsSimilarVideos::SelectionButton as u32, &false),
                                     (ColumnsSimilarVideos::Size as u32, &"".to_string()),
@@ -1080,6 +1077,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                     (ColumnsSimilarVideos::Modification as u32, &"".to_string()),
                                     (ColumnsSimilarVideos::ModificationAsSecs as u32, &(0)),
                                     (ColumnsSimilarVideos::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                    (ColumnsSimilarVideos::IsHeader as u32, &true),
                                     (ColumnsSimilarVideos::TextColor as u32, &(TEXT_COLOR.to_string())),
                                 ];
                                 list_store.set(&list_store.append(), &values);
@@ -1087,7 +1085,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Meat
                                 for file_entry in vec_file_entry.iter() {
                                     let (directory, file) = split_path(&file_entry.path);
-                                    let values: [(u32, &dyn ToValue); 10] = [
+                                    let values: [(u32, &dyn ToValue); 11] = [
                                         (ColumnsSimilarVideos::ActivatableSelectButton as u32, &true),
                                         (ColumnsSimilarVideos::SelectionButton as u32, &false),
                                         (ColumnsSimilarVideos::Size as u32, &file_entry.size.file_size(options::BINARY).unwrap()),
@@ -1100,6 +1098,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                         ),
                                         (ColumnsSimilarVideos::ModificationAsSecs as u32, &(file_entry.modified_date)),
                                         (ColumnsSimilarVideos::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                        (ColumnsSimilarVideos::IsHeader as u32, &false),
                                         (ColumnsSimilarVideos::TextColor as u32, &(TEXT_COLOR.to_string())),
                                     ];
                                     list_store.set(&list_store.append(), &values);
@@ -1141,9 +1140,9 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                     entry_info.set_text(&flg!("compute_stopped_by_user"));
                 } else {
                     if mf.get_use_reference() {
-                        tree_view_same_music_finder.selection().set_select_function(Some(Box::new(select_function_always_true)));
+                        tree_view_same_music_finder.selection().set_select_function(select_function_always_true);
                     } else {
-                        tree_view_same_music_finder.selection().set_select_function(Some(Box::new(select_function_same_music)));
+                        tree_view_same_music_finder.selection().set_select_function(select_function_same_music);
                     }
 
                     let information = mf.get_information();
@@ -1168,11 +1167,12 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                         let music_similarity = *mf.get_music_similarity();
 
-                        let is_title = (MusicSimilarity::TITLE & music_similarity) != MusicSimilarity::NONE;
-                        let is_artist = (MusicSimilarity::ARTIST & music_similarity) != MusicSimilarity::NONE;
-                        let is_album_title = (MusicSimilarity::ALBUM_TITLE & music_similarity) != MusicSimilarity::NONE;
-                        let is_album_artist = (MusicSimilarity::ALBUM_ARTIST & music_similarity) != MusicSimilarity::NONE;
+                        let is_track_title = (MusicSimilarity::TRACK_TITLE & music_similarity) != MusicSimilarity::NONE;
+                        let is_track_artist = (MusicSimilarity::TRACK_ARTIST & music_similarity) != MusicSimilarity::NONE;
                         let is_year = (MusicSimilarity::YEAR & music_similarity) != MusicSimilarity::NONE;
+                        let is_bitrate = (MusicSimilarity::BITRATE & music_similarity) != MusicSimilarity::NONE;
+                        let is_length = (MusicSimilarity::LENGTH & music_similarity) != MusicSimilarity::NONE;
+                        let is_genre = (MusicSimilarity::GENRE & music_similarity) != MusicSimilarity::NONE;
 
                         if mf.get_use_reference() {
                             let vector = mf.get_similar_music_referenced();
@@ -1181,7 +1181,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Sort
                                 let vec_file_entry = if vec_file_entry.len() >= 2 {
                                     let mut vec_file_entry = vec_file_entry.clone();
-                                    vec_file_entry.sort_by_key(|e| {
+                                    vec_file_entry.sort_unstable_by_key(|e| {
                                         let t = split_path(e.path.as_path());
                                         (t.0, t.1)
                                     });
@@ -1191,47 +1191,53 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 };
 
                                 let (directory, file) = split_path(&base_file_entry.path);
-                                let values: [(u32, &dyn ToValue); 15] = [
+                                let values: [(u32, &dyn ToValue); 18] = [
                                     (ColumnsSameMusic::ActivatableSelectButton as u32, &false),
                                     (ColumnsSameMusic::SelectionButton as u32, &false),
                                     (ColumnsSameMusic::Size as u32, &base_file_entry.size.file_size(options::BINARY).unwrap()),
                                     (ColumnsSameMusic::SizeAsBytes as u32, &base_file_entry.size),
                                     (ColumnsSameMusic::Name as u32, &file),
                                     (ColumnsSameMusic::Path as u32, &directory),
-                                    (ColumnsSameMusic::Title as u32, &base_file_entry.title),
-                                    (ColumnsSameMusic::Artist as u32, &base_file_entry.artist),
-                                    (ColumnsSameMusic::AlbumTitle as u32, &base_file_entry.album_title),
-                                    (ColumnsSameMusic::AlbumArtist as u32, &base_file_entry.album_artist),
+                                    (ColumnsSameMusic::Title as u32, &base_file_entry.track_title),
+                                    (ColumnsSameMusic::Artist as u32, &base_file_entry.track_artist),
                                     (ColumnsSameMusic::Year as u32, &base_file_entry.year.to_string()),
+                                    (ColumnsSameMusic::Genre as u32, &base_file_entry.genre),
+                                    (ColumnsSameMusic::Bitrate as u32, &(format!("{} kbps", base_file_entry.bitrate))),
+                                    (ColumnsSameMusic::BitrateAsNumber as u32, &(base_file_entry.bitrate)),
+                                    (ColumnsSameMusic::Length as u32, &base_file_entry.length),
                                     (
                                         ColumnsSameMusic::Modification as u32,
                                         &(NaiveDateTime::from_timestamp(base_file_entry.modified_date as i64, 0).to_string()),
                                     ),
                                     (ColumnsSameMusic::ModificationAsSecs as u32, &(base_file_entry.modified_date)),
                                     (ColumnsSameMusic::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                    (ColumnsSameMusic::IsHeader as u32, &true),
                                     (ColumnsSameMusic::TextColor as u32, &(TEXT_COLOR.to_string())),
                                 ];
                                 list_store.set(&list_store.append(), &values);
                                 for file_entry in vec_file_entry {
                                     let (directory, file) = split_path(&file_entry.path);
-                                    let values: [(u32, &dyn ToValue); 15] = [
+                                    let values: [(u32, &dyn ToValue); 18] = [
                                         (ColumnsSameMusic::ActivatableSelectButton as u32, &true),
                                         (ColumnsSameMusic::SelectionButton as u32, &false),
                                         (ColumnsSameMusic::Size as u32, &file_entry.size.file_size(options::BINARY).unwrap()),
                                         (ColumnsSameMusic::SizeAsBytes as u32, &file_entry.size),
                                         (ColumnsSameMusic::Name as u32, &file),
                                         (ColumnsSameMusic::Path as u32, &directory),
-                                        (ColumnsSameMusic::Title as u32, &file_entry.title),
-                                        (ColumnsSameMusic::Artist as u32, &file_entry.artist),
-                                        (ColumnsSameMusic::AlbumTitle as u32, &file_entry.album_title),
-                                        (ColumnsSameMusic::AlbumArtist as u32, &file_entry.album_artist),
-                                        (ColumnsSameMusic::Year as u32, &file_entry.year.to_string()),
+                                        (ColumnsSameMusic::Title as u32, &base_file_entry.track_title),
+                                        (ColumnsSameMusic::Artist as u32, &base_file_entry.track_artist),
+                                        (ColumnsSameMusic::Year as u32, &base_file_entry.year.to_string()),
+                                        (ColumnsSameMusic::Genre as u32, &base_file_entry.genre),
+                                        (ColumnsSameMusic::Bitrate as u32, &(format!("{} kbps", base_file_entry.bitrate))),
+                                        (ColumnsSameMusic::BitrateAsNumber as u32, &(base_file_entry.bitrate)),
+                                        (ColumnsSameMusic::Length as u32, &base_file_entry.length),
                                         (
                                             ColumnsSameMusic::Modification as u32,
                                             &(NaiveDateTime::from_timestamp(file_entry.modified_date as i64, 0).to_string()),
                                         ),
                                         (ColumnsSameMusic::ModificationAsSecs as u32, &(file_entry.modified_date)),
                                         (ColumnsSameMusic::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                        (ColumnsSameMusic::IsHeader as u32, &false),
                                         (ColumnsSameMusic::TextColor as u32, &(TEXT_COLOR.to_string())),
                                     ];
                                     list_store.set(&list_store.append(), &values);
@@ -1246,7 +1252,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                 // Sort
                                 let vec_file_entry = if vec_file_entry.len() >= 2 {
                                     let mut vec_file_entry = vec_file_entry.clone();
-                                    vec_file_entry.sort_by_key(|e| {
+                                    vec_file_entry.sort_unstable_by_key(|e| {
                                         let t = split_path(e.path.as_path());
                                         (t.0, t.1)
                                     });
@@ -1255,7 +1261,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                     vec_file_entry.clone()
                                 };
 
-                                let values: [(u32, &dyn ToValue); 15] = [
+                                let values: [(u32, &dyn ToValue); 18] = [
                                     (ColumnsSameMusic::ActivatableSelectButton as u32, &false),
                                     (ColumnsSameMusic::SelectionButton as u32, &false),
                                     (ColumnsSameMusic::Size as u32, &"".to_string()),
@@ -1264,28 +1270,14 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                     (ColumnsSameMusic::Path as u32, &"".to_string()),
                                     (
                                         ColumnsSameMusic::Title as u32,
-                                        &(match is_title {
+                                        &(match is_track_title {
                                             true => text.clone(),
                                             false => "".to_string(),
                                         }),
                                     ),
                                     (
                                         ColumnsSameMusic::Artist as u32,
-                                        &(match is_artist {
-                                            true => text.clone(),
-                                            false => "".to_string(),
-                                        }),
-                                    ),
-                                    (
-                                        ColumnsSameMusic::AlbumTitle as u32,
-                                        &(match is_album_title {
-                                            true => text.clone(),
-                                            false => "".to_string(),
-                                        }),
-                                    ),
-                                    (
-                                        ColumnsSameMusic::AlbumArtist as u32,
-                                        &(match is_album_artist {
+                                        &(match is_track_artist {
                                             true => text.clone(),
                                             false => "".to_string(),
                                         }),
@@ -1297,32 +1289,58 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                                             false => "".to_string(),
                                         }),
                                     ),
+                                    (
+                                        ColumnsSameMusic::Bitrate as u32,
+                                        &(match is_bitrate {
+                                            true => text.clone(),
+                                            false => "".to_string(),
+                                        }),
+                                    ),
+                                    (ColumnsSameMusic::BitrateAsNumber as u32, &(0)),
+                                    (
+                                        ColumnsSameMusic::Genre as u32,
+                                        &(match is_genre {
+                                            true => text.clone(),
+                                            false => "".to_string(),
+                                        }),
+                                    ),
+                                    (
+                                        ColumnsSameMusic::Length as u32,
+                                        &(match is_length {
+                                            true => text.clone(),
+                                            false => "".to_string(),
+                                        }),
+                                    ),
                                     (ColumnsSameMusic::Modification as u32, &"".to_string()),
                                     (ColumnsSameMusic::ModificationAsSecs as u32, &(0)),
                                     (ColumnsSameMusic::Color as u32, &(HEADER_ROW_COLOR.to_string())),
+                                    (ColumnsSameMusic::IsHeader as u32, &true),
                                     (ColumnsSameMusic::TextColor as u32, &(TEXT_COLOR.to_string())),
                                 ];
                                 list_store.set(&list_store.append(), &values);
                                 for file_entry in vec_file_entry {
                                     let (directory, file) = split_path(&file_entry.path);
-                                    let values: [(u32, &dyn ToValue); 15] = [
+                                    let values: [(u32, &dyn ToValue); 18] = [
                                         (ColumnsSameMusic::ActivatableSelectButton as u32, &true),
                                         (ColumnsSameMusic::SelectionButton as u32, &false),
                                         (ColumnsSameMusic::Size as u32, &file_entry.size.file_size(options::BINARY).unwrap()),
                                         (ColumnsSameMusic::SizeAsBytes as u32, &file_entry.size),
                                         (ColumnsSameMusic::Name as u32, &file),
                                         (ColumnsSameMusic::Path as u32, &directory),
-                                        (ColumnsSameMusic::Title as u32, &file_entry.title),
-                                        (ColumnsSameMusic::Artist as u32, &file_entry.artist),
-                                        (ColumnsSameMusic::AlbumTitle as u32, &file_entry.album_title),
-                                        (ColumnsSameMusic::AlbumArtist as u32, &file_entry.album_artist),
+                                        (ColumnsSameMusic::Title as u32, &file_entry.track_title),
+                                        (ColumnsSameMusic::Artist as u32, &file_entry.track_artist),
                                         (ColumnsSameMusic::Year as u32, &file_entry.year.to_string()),
+                                        (ColumnsSameMusic::Genre as u32, &file_entry.genre),
+                                        (ColumnsSameMusic::Bitrate as u32, &(format!("{} kbps", file_entry.bitrate))),
+                                        (ColumnsSameMusic::BitrateAsNumber as u32, &(file_entry.bitrate)),
+                                        (ColumnsSameMusic::Length as u32, &file_entry.length),
                                         (
                                             ColumnsSameMusic::Modification as u32,
                                             &(NaiveDateTime::from_timestamp(file_entry.modified_date as i64, 0).to_string()),
                                         ),
                                         (ColumnsSameMusic::ModificationAsSecs as u32, &(file_entry.modified_date)),
                                         (ColumnsSameMusic::Color as u32, &(MAIN_ROW_COLOR.to_string())),
+                                        (ColumnsSameMusic::IsHeader as u32, &false),
                                         (ColumnsSameMusic::TextColor as u32, &(TEXT_COLOR.to_string())),
                                     ];
                                     list_store.set(&list_store.append(), &values);
@@ -1384,7 +1402,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                         // Sort
                         let mut vector = vector.clone();
 
-                        vector.sort_by_key(|e| {
+                        vector.sort_unstable_by_key(|e| {
                             let t = split_path(e.path.as_path());
                             (t.0, t.1)
                         });
@@ -1456,7 +1474,7 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
 
                         // Sort
                         let mut vector = vector.clone();
-                        vector.sort_by_key(|e| {
+                        vector.sort_unstable_by_key(|e| {
                             let t = split_path(e.path.as_path());
                             (t.0, t.1)
                         });
@@ -1498,9 +1516,76 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
                     }
                 }
             }
+            Message::BadExtensions(be) => {
+                if be.get_stopped_search() {
+                    entry_info.set_text(&flg!("compute_stopped_by_user"));
+                } else {
+                    let information = be.get_information();
+                    let text_messages = be.get_text_messages();
+
+                    let bad_extensions_number: usize = information.number_of_files_with_bad_extension;
+                    entry_info.set_text(
+                        flg!(
+                            "compute_found_bad_extensions",
+                            generate_translation_hashmap(vec![("number_files", bad_extensions_number.to_string()),])
+                        )
+                        .as_str(),
+                    );
+
+                    // Create GUI
+                    {
+                        let list_store = get_list_store(&tree_view_bad_extensions);
+
+                        let vector = be.get_bad_extensions_files();
+
+                        // Sort
+                        let mut vector = vector.clone();
+                        vector.sort_unstable_by_key(|e| {
+                            let t = split_path(e.path.as_path());
+                            (t.0, t.1)
+                        });
+
+                        for file_entry in vector {
+                            let (directory, file) = split_path(&file_entry.path);
+                            let values: [(u32, &dyn ToValue); 7] = [
+                                (ColumnsBadExtensions::SelectionButton as u32, &false),
+                                (ColumnsBadExtensions::Name as u32, &file),
+                                (ColumnsBadExtensions::Path as u32, &directory),
+                                (ColumnsBadExtensions::CurrentExtension as u32, &file_entry.current_extension),
+                                (ColumnsBadExtensions::ValidExtensions as u32, &file_entry.proper_extensions),
+                                (
+                                    ColumnsBadExtensions::Modification as u32,
+                                    &(NaiveDateTime::from_timestamp(file_entry.modified_date as i64, 0).to_string()),
+                                ),
+                                (ColumnsBadExtensions::ModificationAsSecs as u32, &(file_entry.modified_date as i64)),
+                            ];
+                            list_store.set(&list_store.append(), &values);
+                        }
+                        print_text_messages_to_text_view(text_messages, &text_view_errors);
+                    }
+
+                    // Set state
+                    {
+                        *shared_bad_extensions_state.borrow_mut() = be;
+
+                        set_specific_buttons_as_active(
+                            &shared_buttons,
+                            &NotebookMainEnum::Temporary,
+                            &[BottomButtonsEnum::Save, BottomButtonsEnum::Delete, BottomButtonsEnum::Select, BottomButtonsEnum::Move],
+                            bad_extensions_number > 0,
+                        );
+
+                        set_buttons(
+                            &mut *shared_buttons.borrow_mut().get_mut(&NotebookMainEnum::Temporary).unwrap(),
+                            &buttons_array,
+                            &buttons_names,
+                        );
+                    }
+                }
+            }
         }
         // Returning false here would close the receiver and have senders fail
-        glib::Continue(true)
+        Continue(true)
     });
 }
 

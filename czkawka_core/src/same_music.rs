@@ -7,13 +7,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
-use std::{mem, thread};
+use std::{mem, panic, thread};
 
-use audiotags::Tag;
 use crossbeam_channel::Receiver;
+use lofty::{read_from, AudioFile, ItemKey};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::common::{create_crash_message, AUDIO_FILES_EXTENSIONS};
 use crate::common::{open_cache_folder, Common, LOOP_DURATION};
 use crate::common_dir_traversal::{CheckingMethod, DirTraversalBuilder, DirTraversalResult, FileEntry, ProgressData};
 use crate::common_directory::Directories;
@@ -21,7 +22,6 @@ use crate::common_extensions::Extensions;
 use crate::common_items::ExcludedItems;
 use crate::common_messages::Messages;
 use crate::common_traits::*;
-use crate::similar_images::AUDIO_FILES_EXTENSIONS;
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum DeleteMethod {
@@ -33,14 +33,12 @@ bitflags! {
     pub struct MusicSimilarity : u32 {
         const NONE = 0;
 
-        const TITLE = 0b1;
-        const ARTIST = 0b10;
-
-        const ALBUM_TITLE = 0b100;
-        const ALBUM_ARTIST = 0b1000;
-
-        const YEAR = 0b10000;
-        // const Time = 0b100000;
+        const TRACK_TITLE = 0b1;
+        const TRACK_ARTIST = 0b10;
+        const YEAR = 0b100;
+        const LENGTH = 0b1000;
+        const GENRE = 0b10000;
+        const BITRATE = 0b100000;
     }
 }
 
@@ -51,14 +49,12 @@ pub struct MusicEntry {
     pub path: PathBuf,
     pub modified_date: u64,
 
-    pub title: String,
-    pub artist: String,
-
-    pub album_title: String,
-    pub album_artist: String,
-
-    pub year: i32,
-    // pub time: u32,
+    pub track_title: String,
+    pub track_artist: String,
+    pub year: String,
+    pub length: String,
+    pub genre: String,
+    pub bitrate: u32,
 }
 
 impl FileEntry {
@@ -68,12 +64,12 @@ impl FileEntry {
             path: self.path.clone(),
             modified_date: self.modified_date,
 
-            title: "".to_string(),
-
-            artist: "".to_string(),
-            album_title: "".to_string(),
-            album_artist: "".to_string(),
-            year: 0,
+            track_title: "".to_string(),
+            track_artist: "".to_string(),
+            year: "".to_string(),
+            length: "".to_string(),
+            genre: "".to_string(),
+            bitrate: 0,
         }
     }
 }
@@ -133,7 +129,7 @@ impl SameMusic {
             duplicated_music_entries: vec![],
             music_to_check: Default::default(),
             approximate_comparison: true,
-            use_cache: true,
+            use_cache: false,
             delete_outdated_cache: true,
             use_reference_folders: false,
             duplicated_music_entries_referenced: vec![],
@@ -199,6 +195,13 @@ impl SameMusic {
         self.recursive_search = recursive_search;
     }
 
+    #[cfg(target_family = "unix")]
+    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
+        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
+    }
+    #[cfg(not(target_family = "unix"))]
+    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
+
     /// Set included dir which needs to be relative, exists etc.
     pub fn set_included_directory(&mut self, included_directory: Vec<PathBuf>) {
         self.directories.set_included_directory(included_directory, &mut self.text_messages);
@@ -249,8 +252,14 @@ impl SameMusic {
 
     fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
         if !self.allowed_extensions.using_custom_extensions() {
-            self.allowed_extensions.extend_allowed_extensions(&AUDIO_FILES_EXTENSIONS);
+            self.allowed_extensions.extend_allowed_extensions(AUDIO_FILES_EXTENSIONS);
+        } else {
+            self.allowed_extensions.validate_allowed_extensions(AUDIO_FILES_EXTENSIONS);
+            if !self.allowed_extensions.using_custom_extensions() {
+                return true;
+            }
         }
+
         let result = DirTraversalBuilder::new()
             .root_dirs(self.directories.included_directories.clone())
             .group_by(|_fe| ())
@@ -319,7 +328,7 @@ impl SameMusic {
             mem::swap(&mut self.music_to_check, &mut non_cached_files_to_check);
         }
 
-        let check_was_breaked = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
+        let check_was_stopped = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
 
         //// PROGRESS THREAD START
         let progress_thread_run = Arc::new(AtomicBool::new(true));
@@ -357,32 +366,102 @@ impl SameMusic {
             .map(|(path, mut music_entry)| {
                 atomic_file_counter.fetch_add(1, Ordering::Relaxed);
                 if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                    check_was_breaked.store(true, Ordering::Relaxed);
+                    check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
                 }
 
-                let tag = match Tag::new().read_from_path(&path) {
+                let mut file = match File::open(&path) {
                     Ok(t) => t,
-                    Err(_inspected) => return Some(Some(music_entry)), // Data not in utf-8, etc., TODO this should be probably added to warnings, errors
+                    Err(_) => return Some(None),
                 };
 
-                music_entry.title = match tag.title() {
-                    Some(t) => t.to_string(),
-                    None => "".to_string(),
+                let result = panic::catch_unwind(move || {
+                    match read_from(&mut file, true) {
+                        Ok(t) => Some(t),
+                        Err(_inspected) => {
+                            // println!("Failed to open {}", path);
+                            None
+                        }
+                    }
+                });
+
+                let tagged_file = match result {
+                    Ok(t) => match t {
+                        Some(r) => r,
+                        None => {
+                            return Some(Some(music_entry));
+                        }
+                    },
+                    Err(_) => {
+                        let message = create_crash_message("Lofty", &path, "https://github.com/image-rs/image/issues");
+                        println!("{message}");
+                        return Some(None);
+                    }
                 };
-                music_entry.artist = match tag.artist() {
-                    Some(t) => t.to_string(),
-                    None => "".to_string(),
-                };
-                music_entry.album_title = match tag.album_title() {
-                    Some(t) => t.to_string(),
-                    None => "".to_string(),
-                };
-                music_entry.album_artist = match tag.album_artist() {
-                    Some(t) => t.to_string(),
-                    None => "".to_string(),
-                };
-                music_entry.year = tag.year().unwrap_or(0);
+
+                let properties = tagged_file.properties();
+
+                let mut track_title = "".to_string();
+                let mut track_artist = "".to_string();
+                let mut year = "".to_string();
+                let mut genre = "".to_string();
+
+                let bitrate = properties.audio_bitrate().unwrap_or(0);
+                let mut length = properties.duration().as_millis().to_string();
+
+                if let Some(tag) = tagged_file.primary_tag() {
+                    track_title = tag.get_string(&ItemKey::TrackTitle).unwrap_or("").to_string();
+                    track_artist = tag.get_string(&ItemKey::TrackArtist).unwrap_or("").to_string();
+                    year = tag.get_string(&ItemKey::Year).unwrap_or("").to_string();
+                    genre = tag.get_string(&ItemKey::Genre).unwrap_or("").to_string();
+                }
+
+                for tag in tagged_file.tags() {
+                    if track_title.is_empty() {
+                        if let Some(tag_value) = tag.get_string(&ItemKey::TrackTitle) {
+                            track_title = tag_value.to_string();
+                        }
+                    }
+                    if track_artist.is_empty() {
+                        if let Some(tag_value) = tag.get_string(&ItemKey::TrackArtist) {
+                            track_artist = tag_value.to_string();
+                        }
+                    }
+                    if year.is_empty() {
+                        if let Some(tag_value) = tag.get_string(&ItemKey::Year) {
+                            year = tag_value.to_string();
+                        }
+                    }
+                    if genre.is_empty() {
+                        if let Some(tag_value) = tag.get_string(&ItemKey::Genre) {
+                            genre = tag_value.to_string();
+                        }
+                    }
+                    // println!("{:?}", tag.items());
+                }
+
+                if let Ok(old_length_number) = length.parse::<u32>() {
+                    let length_number = old_length_number / 60;
+                    let minutes = length_number / 1000;
+                    let seconds = (length_number % 1000) * 6 / 100;
+                    if minutes != 0 || seconds != 0 {
+                        length = format!("{}:{:02}", minutes, seconds);
+                    } else if old_length_number > 0 {
+                        // That means, that audio have length smaller that second, but length is properly read
+                        length = "0:01".to_string();
+                    } else {
+                        length = "".to_string();
+                    }
+                } else {
+                    length = "".to_string();
+                }
+
+                music_entry.track_title = track_title;
+                music_entry.track_artist = track_artist;
+                music_entry.year = year;
+                music_entry.length = length;
+                music_entry.genre = genre;
+                music_entry.bitrate = bitrate;
 
                 Some(Some(music_entry))
             })
@@ -394,11 +473,6 @@ impl SameMusic {
         // End thread which send info to gui
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
-
-        // Check if user aborted search(only from GUI)
-        if check_was_breaked.load(Ordering::Relaxed) {
-            return false;
-        }
 
         // Just connect loaded results with already calculated
         for (_name, file_entry) in records_already_cached {
@@ -415,6 +489,11 @@ impl SameMusic {
                 all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
             }
             save_cache_to_file(&all_results, &mut self.text_messages, self.save_also_as_json);
+        }
+
+        // Break if stop was clicked after saving to cache
+        if check_was_stopped.load(Ordering::Relaxed) {
+            return false;
         }
 
         Common::print_time(start_time, SystemTime::now(), "check_records_multithreaded".to_string());
@@ -460,7 +539,7 @@ impl SameMusic {
         let mut old_duplicates: Vec<Vec<MusicEntry>> = vec![self.music_entries.clone()];
         let mut new_duplicates: Vec<Vec<MusicEntry>> = Vec::new();
 
-        if (self.music_similarity & MusicSimilarity::TITLE) == MusicSimilarity::TITLE {
+        if (self.music_similarity & MusicSimilarity::TRACK_TITLE) == MusicSimilarity::TRACK_TITLE {
             for vec_file_entry in old_duplicates {
                 atomic_file_counter.fetch_add(1, Ordering::Relaxed);
                 if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
@@ -471,13 +550,12 @@ impl SameMusic {
                 }
                 let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
                 for file_entry in vec_file_entry {
-                    let mut title = file_entry.title.to_lowercase().trim().to_string();
+                    let mut thing = file_entry.track_title.trim().to_lowercase();
                     if self.approximate_comparison {
-                        get_approximate_conversion(&mut title);
+                        get_approximate_conversion(&mut thing);
                     }
-                    if !title.is_empty() {
-                        hash_map.entry(title.clone()).or_insert_with(Vec::new);
-                        hash_map.get_mut(title.as_str()).unwrap().push(file_entry);
+                    if !thing.is_empty() {
+                        hash_map.entry(thing.clone()).or_insert_with(Vec::new).push(file_entry);
                     }
                 }
                 for (_title, vec_file_entry) in hash_map {
@@ -489,8 +567,7 @@ impl SameMusic {
             old_duplicates = new_duplicates;
             new_duplicates = Vec::new();
         }
-
-        if (self.music_similarity & MusicSimilarity::ARTIST) == MusicSimilarity::ARTIST {
+        if (self.music_similarity & MusicSimilarity::TRACK_ARTIST) == MusicSimilarity::TRACK_ARTIST {
             for vec_file_entry in old_duplicates {
                 atomic_file_counter.fetch_add(1, Ordering::Relaxed);
                 if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
@@ -501,16 +578,15 @@ impl SameMusic {
                 }
                 let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
                 for file_entry in vec_file_entry {
-                    let mut artist = file_entry.artist.to_lowercase().trim().to_string();
+                    let mut thing = file_entry.track_artist.trim().to_lowercase();
                     if self.approximate_comparison {
-                        get_approximate_conversion(&mut artist);
+                        get_approximate_conversion(&mut thing);
                     }
-                    if !artist.is_empty() {
-                        hash_map.entry(artist.clone()).or_insert_with(Vec::new);
-                        hash_map.get_mut(artist.as_str()).unwrap().push(file_entry);
+                    if !thing.is_empty() {
+                        hash_map.entry(thing.clone()).or_insert_with(Vec::new).push(file_entry);
                     }
                 }
-                for (_artist, vec_file_entry) in hash_map {
+                for (_title, vec_file_entry) in hash_map {
                     if vec_file_entry.len() > 1 {
                         new_duplicates.push(vec_file_entry);
                     }
@@ -519,67 +595,6 @@ impl SameMusic {
             old_duplicates = new_duplicates;
             new_duplicates = Vec::new();
         }
-
-        if (self.music_similarity & MusicSimilarity::ALBUM_TITLE) == MusicSimilarity::ALBUM_TITLE {
-            for vec_file_entry in old_duplicates {
-                atomic_file_counter.fetch_add(1, Ordering::Relaxed);
-                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                    // End thread which send info to gui
-                    progress_thread_run.store(false, Ordering::Relaxed);
-                    progress_thread_handle.join().unwrap();
-                    return false;
-                }
-                let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
-                for file_entry in vec_file_entry {
-                    let mut album_title = file_entry.album_title.to_lowercase().trim().to_string();
-                    if self.approximate_comparison {
-                        get_approximate_conversion(&mut album_title);
-                    }
-                    if !album_title.is_empty() {
-                        hash_map.entry(album_title.clone()).or_insert_with(Vec::new);
-                        hash_map.get_mut(album_title.as_str()).unwrap().push(file_entry);
-                    }
-                }
-                for (_album_title, vec_file_entry) in hash_map {
-                    if vec_file_entry.len() > 1 {
-                        new_duplicates.push(vec_file_entry);
-                    }
-                }
-            }
-            old_duplicates = new_duplicates;
-            new_duplicates = Vec::new();
-        }
-
-        if (self.music_similarity & MusicSimilarity::ALBUM_ARTIST) == MusicSimilarity::ALBUM_ARTIST {
-            for vec_file_entry in old_duplicates {
-                atomic_file_counter.fetch_add(1, Ordering::Relaxed);
-                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
-                    // End thread which send info to gui
-                    progress_thread_run.store(false, Ordering::Relaxed);
-                    progress_thread_handle.join().unwrap();
-                    return false;
-                }
-                let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
-                for file_entry in vec_file_entry {
-                    let mut album_artist = file_entry.album_artist.to_lowercase().trim().to_string();
-                    if self.approximate_comparison {
-                        get_approximate_conversion(&mut album_artist);
-                    }
-                    if !album_artist.is_empty() {
-                        hash_map.entry(album_artist.clone()).or_insert_with(Vec::new);
-                        hash_map.get_mut(album_artist.as_str()).unwrap().push(file_entry);
-                    }
-                }
-                for (_album_artist, vec_file_entry) in hash_map {
-                    if vec_file_entry.len() > 1 {
-                        new_duplicates.push(vec_file_entry);
-                    }
-                }
-            }
-            old_duplicates = new_duplicates;
-            new_duplicates = Vec::new();
-        }
-
         if (self.music_similarity & MusicSimilarity::YEAR) == MusicSimilarity::YEAR {
             for vec_file_entry in old_duplicates {
                 atomic_file_counter.fetch_add(1, Ordering::Relaxed);
@@ -589,15 +604,91 @@ impl SameMusic {
                     progress_thread_handle.join().unwrap();
                     return false;
                 }
-                let mut hash_map: BTreeMap<i32, Vec<MusicEntry>> = Default::default();
+                let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
                 for file_entry in vec_file_entry {
-                    let year = file_entry.year;
-                    if year != 0 {
-                        hash_map.entry(year).or_insert_with(Vec::new);
-                        hash_map.get_mut(&year).unwrap().push(file_entry);
+                    let thing = file_entry.year.trim().to_lowercase();
+                    if !thing.is_empty() {
+                        hash_map.entry(thing.clone()).or_insert_with(Vec::new).push(file_entry);
                     }
                 }
-                for (_year, vec_file_entry) in hash_map {
+                for (_title, vec_file_entry) in hash_map {
+                    if vec_file_entry.len() > 1 {
+                        new_duplicates.push(vec_file_entry);
+                    }
+                }
+            }
+            old_duplicates = new_duplicates;
+            new_duplicates = Vec::new();
+        }
+        if (self.music_similarity & MusicSimilarity::LENGTH) == MusicSimilarity::LENGTH {
+            for vec_file_entry in old_duplicates {
+                atomic_file_counter.fetch_add(1, Ordering::Relaxed);
+                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+                    // End thread which send info to gui
+                    progress_thread_run.store(false, Ordering::Relaxed);
+                    progress_thread_handle.join().unwrap();
+                    return false;
+                }
+                let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
+                for file_entry in vec_file_entry {
+                    let thing = file_entry.length.trim().to_lowercase();
+                    if !thing.is_empty() {
+                        hash_map.entry(thing.clone()).or_insert_with(Vec::new).push(file_entry);
+                    }
+                }
+                for (_title, vec_file_entry) in hash_map {
+                    if vec_file_entry.len() > 1 {
+                        new_duplicates.push(vec_file_entry);
+                    }
+                }
+            }
+            old_duplicates = new_duplicates;
+            new_duplicates = Vec::new();
+        }
+        if (self.music_similarity & MusicSimilarity::GENRE) == MusicSimilarity::GENRE {
+            for vec_file_entry in old_duplicates {
+                atomic_file_counter.fetch_add(1, Ordering::Relaxed);
+                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+                    // End thread which send info to gui
+                    progress_thread_run.store(false, Ordering::Relaxed);
+                    progress_thread_handle.join().unwrap();
+                    return false;
+                }
+                let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
+                for file_entry in vec_file_entry {
+                    let thing = file_entry.genre.trim().to_lowercase();
+                    if !thing.is_empty() {
+                        hash_map.entry(thing.clone()).or_insert_with(Vec::new).push(file_entry);
+                    }
+                }
+                for (_title, vec_file_entry) in hash_map {
+                    if vec_file_entry.len() > 1 {
+                        new_duplicates.push(vec_file_entry);
+                    }
+                }
+            }
+            old_duplicates = new_duplicates;
+            new_duplicates = Vec::new();
+        }
+        if (self.music_similarity & MusicSimilarity::BITRATE) == MusicSimilarity::BITRATE {
+            for vec_file_entry in old_duplicates {
+                atomic_file_counter.fetch_add(1, Ordering::Relaxed);
+                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+                    // End thread which send info to gui
+                    progress_thread_run.store(false, Ordering::Relaxed);
+                    progress_thread_handle.join().unwrap();
+                    return false;
+                }
+                let mut hash_map: BTreeMap<String, Vec<MusicEntry>> = Default::default();
+                for file_entry in vec_file_entry {
+                    if file_entry.bitrate != 0 {
+                        let thing = file_entry.bitrate.to_string();
+                        if !thing.is_empty() {
+                            hash_map.entry(thing.clone()).or_insert_with(Vec::new).push(file_entry);
+                        }
+                    }
+                }
+                for (_title, vec_file_entry) in hash_map {
                     if vec_file_entry.len() > 1 {
                         new_duplicates.push(vec_file_entry);
                     }
@@ -614,10 +705,10 @@ impl SameMusic {
         self.duplicated_music_entries = old_duplicates;
 
         if self.use_reference_folders {
-            let mut similars_vector = Default::default();
-            mem::swap(&mut self.duplicated_music_entries, &mut similars_vector);
+            let mut similar_vector = Default::default();
+            mem::swap(&mut self.duplicated_music_entries, &mut similar_vector);
             let reference_directories = self.directories.reference_directories.clone();
-            self.duplicated_music_entries_referenced = similars_vector
+            self.duplicated_music_entries_referenced = similar_vector
                 .into_iter()
                 .filter_map(|vec_file_entry| {
                     let mut files_from_referenced_folders = Vec::new();
@@ -788,6 +879,8 @@ impl DebugPrint for SameMusic {
         println!("Included directories - {:?}", self.directories.included_directories);
         println!("Excluded directories - {:?}", self.directories.excluded_directories);
         println!("Recursive search - {}", self.recursive_search);
+        #[cfg(target_family = "unix")]
+        println!("Skip other filesystems - {}", self.directories.exclude_other_filesystems());
         println!("Delete Method - {:?}", self.delete_method);
         println!("-----------------------------------------");
     }
@@ -841,12 +934,13 @@ impl PrintResults for SameMusic {
         for vec_file_entry in self.duplicated_music_entries.iter() {
             for file_entry in vec_file_entry {
                 println!(
-                    "T: {}  -  A: {}  -  Y: {}  -  AT: {}  -  AA: {}  -  P: {}",
-                    file_entry.title,
-                    file_entry.artist,
+                    "TT: {}  -  TA: {}  -  Y: {}  -  L: {}  -  G: {}  -  B: {}  -  P: {}",
+                    file_entry.track_title,
+                    file_entry.track_artist,
                     file_entry.year,
-                    file_entry.album_title,
-                    file_entry.album_artist,
+                    file_entry.length,
+                    file_entry.genre,
+                    file_entry.bitrate,
                     file_entry.path.display()
                 );
             }
@@ -863,10 +957,10 @@ fn get_approximate_conversion(what: &mut String) {
     let mut space_before = true;
     for character in what.chars() {
         match character {
-            '(' => {
+            '(' | '[' => {
                 tab_number += 1;
             }
-            ')' => {
+            ')' | ']' => {
                 if tab_number == 0 {
                     // Nothing to do, not even save it to output
                 } else {
@@ -917,5 +1011,9 @@ mod tests {
         let mut what = "  fsf.f.  ".to_string();
         get_approximate_conversion(&mut what);
         assert_eq!(what, "fsf f");
+
+        let mut what = "Kekistan (feat. roman) [Mix on Mix]".to_string();
+        get_approximate_conversion(&mut what);
+        assert_eq!(what, "Kekistan");
     }
 }

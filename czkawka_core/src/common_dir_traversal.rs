@@ -7,10 +7,10 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, thread};
 
-use crate::common::LOOP_DURATION;
 use crossbeam_channel::Receiver;
 use rayon::prelude::*;
 
+use crate::common::LOOP_DURATION;
 use crate::common_directory::Directories;
 use crate::common_extensions::Extensions;
 use crate::common_items::ExcludedItems;
@@ -34,7 +34,7 @@ pub enum CheckingMethod {
     Hash,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileEntry {
     pub path: PathBuf,
     pub size: u64,
@@ -47,13 +47,13 @@ pub struct FileEntry {
 
 const MAX_NUMBER_OF_SYMLINK_JUMPS: i32 = 20;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SymlinkInfo {
     pub destination_path: PathBuf,
     pub type_of_error: ErrorType,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ErrorType {
     InfiniteRecursion,
     NonExistentFile,
@@ -72,7 +72,8 @@ pub(crate) enum FolderEmptiness {
 /// Struct assigned to each checked folder with parent path(used to ignore parent if children are not empty) and flag which shows if folder is empty
 #[derive(Clone)]
 pub struct FolderEntry {
-    pub(crate) parent_path: Option<PathBuf>, // Usable only when finding
+    pub(crate) parent_path: Option<PathBuf>,
+    // Usable only when finding
     pub(crate) is_empty: FolderEmptiness,
     pub modified_date: u64,
 }
@@ -210,6 +211,15 @@ impl<'a, 'b, F> DirTraversalBuilder<'a, 'b, F> {
 
     pub fn recursive_search(mut self, recursive_search: bool) -> Self {
         self.recursive_search = recursive_search;
+        self
+    }
+
+    #[cfg(target_family = "unix")]
+    pub fn exclude_other_filesystems(mut self, exclude_other_filesystems: bool) -> Self {
+        match self.directories {
+            Some(ref mut directories) => directories.set_exclude_other_filesystems(exclude_other_filesystems),
+            None => panic!("Directories is None"),
+        }
         self
     }
 
@@ -417,6 +427,15 @@ where
                                     continue 'dir;
                                 }
 
+                                #[cfg(target_family = "unix")]
+                                if directories.exclude_other_filesystems() {
+                                    match directories.is_on_other_filesystems(&next_folder) {
+                                        Ok(true) => continue 'dir,
+                                        Err(e) => warnings.push(e.to_string()),
+                                        _ => (),
+                                    }
+                                }
+
                                 dir_result.push(next_folder);
                             }
                             (EntryType::Dir, Collect::EmptyFolders) => {
@@ -426,6 +445,16 @@ where
                                     set_as_not_empty_folder_list.push(current_folder.clone());
                                     continue 'dir;
                                 }
+
+                                #[cfg(target_family = "unix")]
+                                if directories.exclude_other_filesystems() {
+                                    match directories.is_on_other_filesystems(&next_folder) {
+                                        Ok(true) => continue 'dir,
+                                        Err(e) => warnings.push(e.to_string()),
+                                        _ => (),
+                                    }
+                                }
+
                                 dir_result.push(next_folder.clone());
                                 folder_entries_list.push((
                                     next_folder.clone(),
@@ -479,6 +508,15 @@ where
                                         continue 'dir;
                                     }
 
+                                    #[cfg(target_family = "unix")]
+                                    if directories.exclude_other_filesystems() {
+                                        match directories.is_on_other_filesystems(&current_file_name) {
+                                            Ok(true) => continue 'dir,
+                                            Err(e) => warnings.push(e.to_string()),
+                                            _ => (),
+                                        }
+                                    }
+
                                     // Creating new file entry
                                     let fe: FileEntry = FileEntry {
                                         path: current_file_name.clone(),
@@ -510,6 +548,15 @@ where
                                 }
                             }
                             (EntryType::File, Collect::EmptyFolders) | (EntryType::Symlink, Collect::EmptyFolders) => {
+                                #[cfg(target_family = "unix")]
+                                if directories.exclude_other_filesystems() {
+                                    match directories.is_on_other_filesystems(&current_folder) {
+                                        Ok(true) => continue 'dir,
+                                        Err(e) => warnings.push(e.to_string()),
+                                        _ => (),
+                                    }
+                                }
+
                                 set_as_not_empty_folder_list.push(current_folder.clone());
                             }
                             (EntryType::File, Collect::InvalidSymlinks) => {
@@ -537,6 +584,15 @@ where
                                 let current_file_name = current_folder.join(entry_data.file_name());
                                 if excluded_items.is_excluded(&current_file_name) {
                                     continue 'dir;
+                                }
+
+                                #[cfg(target_family = "unix")]
+                                if directories.exclude_other_filesystems() {
+                                    match directories.is_on_other_filesystems(&current_folder) {
+                                        Ok(true) => continue 'dir,
+                                        Err(e) => warnings.push(e.to_string()),
+                                        _ => (),
+                                    }
                                 }
 
                                 let mut destination_path = PathBuf::new();

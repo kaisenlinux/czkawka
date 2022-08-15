@@ -1,5 +1,5 @@
 #!/bin/bash
-NUMBER="4.0.0"
+NUMBER="5.0.1"
 CZKAWKA_PATH="/home/rafal"
 
 cd "$CZKAWKA_PATH"
@@ -33,11 +33,11 @@ git reset --hard
 
 
 cd "$CZKAWKA_PATH/czkawka_cli"
-sed -i "s/{ path = \"..\/czkawka_core\" }/\"=$NUMBER\"/g" "$CZKAWKA_PATH/czkawka_cli/Cargo.toml"
-cargo publish --allow-dirty
+# sed -i "s/{ path = \"..\/czkawka_core\" }/\"=$NUMBER\"/g" "$CZKAWKA_PATH/czkawka_cli/Cargo.toml"
+cargo publish # --allow-dirty
 git reset --hard
 
 cd "$CZKAWKA_PATH/czkawka_gui"
-sed -i "s/{ path = \"..\/czkawka_core\" }/\"=$NUMBER\"/g" "$CZKAWKA_PATH/czkawka_gui/Cargo.toml"
-cargo publish --allow-dirty
+# sed -i "s/{ path = \"..\/czkawka_core\" }/\"=$NUMBER\"/g" "$CZKAWKA_PATH/czkawka_gui/Cargo.toml"
+cargo publish # --allow-dirty
 git reset --hard

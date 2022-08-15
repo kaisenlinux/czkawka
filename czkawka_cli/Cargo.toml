@@ -1,16 +1,25 @@
 [package]
 name = "czkawka_cli"
-version = "4.0.0"
+version = "5.0.1"
 authors = ["Rafał Mikrut <mikrutrafal@protonmail.com>"]
-edition = "2018"
+edition = "2021"
+rust-version = "1.60"
 description = "CLI frontend of Czkawka"
 license = "MIT"
 homepage = "https://github.com/qarmin/czkawka"
 repository = "https://github.com/qarmin/czkawka"
 
 [dependencies]
-czkawka_core = { path = "../czkawka_core", version = "4.0.0" }
-structopt = "0.3.25"
+clap = { version = "3.2.15", features = ["derive"] }
 
 # For enum types
-img_hash = "3.2.0"
+image_hasher = "1.0.0"
+
+[dependencies.czkawka_core]
+path = "../czkawka_core"
+version = "5.0.1"
+features = []
+
+[features]
+default = []
+heif = ["czkawka_core/heif"]

@@ -5,7 +5,7 @@ pub struct Language {
 }
 
 /// Languages should be alphabetically sorted
-pub const LANGUAGES_ALL: [Language; 12] = [
+pub const LANGUAGES_ALL: [Language; 15] = [
     Language {
         combo_box_text: "English",
         short_text: "en",
@@ -21,6 +21,18 @@ pub const LANGUAGES_ALL: [Language; 12] = [
     Language {
         combo_box_text: "Polski (Polish)",
         short_text: "pl",
+    },
+    Language {
+        combo_box_text: "Русский (Russian)",
+        short_text: "ru",
+    },
+    Language {
+        combo_box_text: "український (Ukrainian)",
+        short_text: "uk",
+    },
+    Language {
+        combo_box_text: "한국인 (Korean)",
+        short_text: "ko",
     },
     Language {
         combo_box_text: "Česky (Czech) - Computer translation",
@@ -39,10 +51,6 @@ pub const LANGUAGES_ALL: [Language; 12] = [
         short_text: "pt",
     },
     Language {
-        combo_box_text: "Русский (Russian) - Computer translation",
-        short_text: "ru",
-    },
-    Language {
         combo_box_text: "简体中文 (Simplified Chinese) - Computer translation",
         short_text: "zh",
     },
@@ -51,8 +59,12 @@ pub const LANGUAGES_ALL: [Language; 12] = [
         short_text: "es",
     },
     Language {
-        combo_box_text: "український (Ukrainian) - Computer translation",
-        short_text: "uk",
+        combo_box_text: "Norsk (Norwegian) - Computer translation",
+        short_text: "no",
+    },
+    Language {
+        combo_box_text: "Swedish (Svenska) - Computer translation",
+        short_text: "sv",
     },
 ];
 
