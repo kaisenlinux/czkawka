@@ -15,4 +15,7 @@ Package: czkawka
 Architecture: any
 Depends: ${shlibs:Depends},
 	 ${misc:Depends},
+	 libcairo2,
+	 libcairo-gobject2,
+	 libgraphene-1.0-0,
 Description: Multi functional app to find duplicates, empty folders, similar images etc
