@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 use std::{mem, panic, thread};
 
 use crossbeam_channel::Receiver;
+use lofty::TaggedFileExt;
 use lofty::{read_from, AudioFile, ItemKey};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use crate::common_items::ExcludedItems;
 use crate::common_messages::Messages;
 use crate::common_traits::*;
 
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug, Copy)]
 pub enum DeleteMethod {
     None,
     Delete,
@@ -38,7 +39,7 @@ bitflags! {
         const YEAR = 0b100;
         const LENGTH = 0b1000;
         const GENRE = 0b10000;
-        const BITRATE = 0b100000;
+        const BITRATE = 0b10_0000;
     }
 }
 
@@ -64,11 +65,11 @@ impl FileEntry {
             path: self.path.clone(),
             modified_date: self.modified_date,
 
-            track_title: "".to_string(),
-            track_artist: "".to_string(),
-            year: "".to_string(),
-            length: "".to_string(),
-            genre: "".to_string(),
+            track_title: String::new(),
+            track_artist: String::new(),
+            year: String::new(),
+            length: String::new(),
+            genre: String::new(),
             bitrate: 0,
         }
     }
@@ -82,6 +83,7 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -112,6 +114,7 @@ pub struct SameMusic {
 }
 
 impl SameMusic {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             text_messages: Messages::new(),
@@ -156,21 +159,26 @@ impl SameMusic {
         self.debug_print();
     }
 
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
 
+    #[must_use]
     pub const fn get_duplicated_music_entries(&self) -> &Vec<Vec<MusicEntry>> {
         &self.duplicated_music_entries
     }
+    #[must_use]
     pub const fn get_music_similarity(&self) -> &MusicSimilarity {
         &self.music_similarity
     }
 
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -234,10 +242,12 @@ impl SameMusic {
         };
     }
 
+    #[must_use]
     pub fn get_similar_music_referenced(&self) -> &Vec<(MusicEntry, Vec<MusicEntry>)> {
         &self.duplicated_music_entries_referenced
     }
 
+    #[must_use]
     pub fn get_number_of_base_duplicated_files(&self) -> usize {
         if self.use_reference_folders {
             self.duplicated_music_entries_referenced.len()
@@ -246,6 +256,7 @@ impl SameMusic {
         }
     }
 
+    #[must_use]
     pub fn get_use_reference(&self) -> bool {
         self.use_reference_folders
     }
@@ -286,7 +297,7 @@ impl SameMusic {
                     }
                 }
                 self.text_messages.warnings.extend(warnings);
-                Common::print_time(start_time, SystemTime::now(), "check_files".to_string());
+                Common::print_time(start_time, SystemTime::now(), "check_files");
                 true
             }
             DirTraversalResult::SuccessFolders { .. } => {
@@ -346,7 +357,7 @@ impl SameMusic {
                         checking_method: CheckingMethod::None,
                         current_stage: 1,
                         max_stage: 2,
-                        entries_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        entries_checked: atomic_file_counter.load(Ordering::Relaxed),
                         entries_to_check: music_to_check,
                     })
                     .unwrap();
@@ -376,7 +387,7 @@ impl SameMusic {
                 };
 
                 let result = panic::catch_unwind(move || {
-                    match read_from(&mut file, true) {
+                    match read_from(&mut file) {
                         Ok(t) => Some(t),
                         Err(_inspected) => {
                             // println!("Failed to open {}", path);
@@ -385,26 +396,25 @@ impl SameMusic {
                     }
                 });
 
-                let tagged_file = match result {
-                    Ok(t) => match t {
+                let tagged_file = if let Ok(t) = result {
+                    match t {
                         Some(r) => r,
                         None => {
                             return Some(Some(music_entry));
                         }
-                    },
-                    Err(_) => {
-                        let message = create_crash_message("Lofty", &path, "https://github.com/image-rs/image/issues");
-                        println!("{message}");
-                        return Some(None);
                     }
+                } else {
+                    let message = create_crash_message("Lofty", &path, "https://github.com/image-rs/image/issues");
+                    println!("{message}");
+                    return Some(None);
                 };
 
                 let properties = tagged_file.properties();
 
-                let mut track_title = "".to_string();
-                let mut track_artist = "".to_string();
-                let mut year = "".to_string();
-                let mut genre = "".to_string();
+                let mut track_title = String::new();
+                let mut track_artist = String::new();
+                let mut year = String::new();
+                let mut genre = String::new();
 
                 let bitrate = properties.audio_bitrate().unwrap_or(0);
                 let mut length = properties.duration().as_millis().to_string();
@@ -445,15 +455,15 @@ impl SameMusic {
                     let minutes = length_number / 1000;
                     let seconds = (length_number % 1000) * 6 / 100;
                     if minutes != 0 || seconds != 0 {
-                        length = format!("{}:{:02}", minutes, seconds);
+                        length = format!("{minutes}:{seconds:02}");
                     } else if old_length_number > 0 {
                         // That means, that audio have length smaller that second, but length is properly read
                         length = "0:01".to_string();
                     } else {
-                        length = "".to_string();
+                        length = String::new();
                     }
                 } else {
-                    length = "".to_string();
+                    length = String::new();
                 }
 
                 music_entry.track_title = track_title;
@@ -466,8 +476,8 @@ impl SameMusic {
                 Some(Some(music_entry))
             })
             .while_some()
-            .filter(|music_entry| music_entry.is_some())
-            .map(|music_entry| music_entry.unwrap())
+            .filter(Option::is_some)
+            .map(Option::unwrap)
             .collect::<Vec<_>>();
 
         // End thread which send info to gui
@@ -496,14 +506,12 @@ impl SameMusic {
             return false;
         }
 
-        Common::print_time(start_time, SystemTime::now(), "check_records_multithreaded".to_string());
+        Common::print_time(start_time, SystemTime::now(), "check_records_multithreaded");
 
         true
     }
     fn check_for_duplicates(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
-        if MusicSimilarity::NONE == self.music_similarity {
-            panic!("This can't be none");
-        }
+        assert!(MusicSimilarity::NONE != self.music_similarity, "This can't be none");
         let start_time: SystemTime = SystemTime::now();
 
         //// PROGRESS THREAD START
@@ -522,7 +530,7 @@ impl SameMusic {
                         checking_method: CheckingMethod::None,
                         current_stage: 2,
                         max_stage: 2,
-                        entries_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        entries_checked: atomic_file_counter.load(Ordering::Relaxed),
                         entries_to_check: music_to_check,
                     })
                     .unwrap();
@@ -658,7 +666,7 @@ impl SameMusic {
                 for file_entry in vec_file_entry {
                     let thing = file_entry.genre.trim().to_lowercase();
                     if !thing.is_empty() {
-                        hash_map.entry(thing.clone()).or_insert_with(Vec::new).push(file_entry);
+                        hash_map.entry(thing).or_insert_with(Vec::new).push(file_entry);
                     }
                 }
                 for (_title, vec_file_entry) in hash_map {
@@ -714,7 +722,7 @@ impl SameMusic {
                     let mut files_from_referenced_folders = Vec::new();
                     let mut normal_files = Vec::new();
                     for file_entry in vec_file_entry {
-                        if reference_directories.iter().any(|e| file_entry.path.starts_with(&e)) {
+                        if reference_directories.iter().any(|e| file_entry.path.starts_with(e)) {
                             files_from_referenced_folders.push(file_entry);
                         } else {
                             normal_files.push(file_entry);
@@ -742,7 +750,7 @@ impl SameMusic {
             }
         }
 
-        Common::print_time(start_time, SystemTime::now(), "check_for_duplicates".to_string());
+        Common::print_time(start_time, SystemTime::now(), "check_for_duplicates");
 
         // Clear unused data
         self.music_entries.clear();
@@ -774,7 +782,7 @@ impl SameMusic {
         //     }
         // }
 
-        Common::print_time(start_time, SystemTime::now(), "delete_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "delete_files");
     }
 }
 
@@ -897,7 +905,7 @@ impl SaveResults for SameMusic {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -908,19 +916,19 @@ impl SaveResults for SameMusic {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
         if !self.music_entries.is_empty() {
             writeln!(writer, "Found {} same music files.", self.information.number_of_duplicates).unwrap();
-            for file_entry in self.music_entries.iter() {
+            for file_entry in &self.music_entries {
                 writeln!(writer, "{}", file_entry.path.display()).unwrap();
             }
         } else {
             write!(writer, "Not found any empty files.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -931,7 +939,7 @@ impl PrintResults for SameMusic {
     fn print_results(&self) {
         let start_time: SystemTime = SystemTime::now();
         println!("Found {} similar music files.\n", self.duplicated_music_entries.len());
-        for vec_file_entry in self.duplicated_music_entries.iter() {
+        for vec_file_entry in &self.duplicated_music_entries {
             for file_entry in vec_file_entry {
                 println!(
                     "TT: {}  -  TA: {}  -  Y: {}  -  L: {}  -  G: {}  -  B: {}  -  P: {}",
@@ -947,7 +955,7 @@ impl PrintResults for SameMusic {
             println!();
         }
 
-        Common::print_time(start_time, SystemTime::now(), "print_entries".to_string());
+        Common::print_time(start_time, SystemTime::now(), "print_entries");
     }
 }
 

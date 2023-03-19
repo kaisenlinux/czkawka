@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, thread};
 
 use crossbeam_channel::Receiver;
-use humansize::{file_size_opts as options, FileSize};
+use humansize::format_size;
+use humansize::BINARY;
 use rayon::prelude::*;
 
 use crate::common::split_path;
@@ -42,7 +43,7 @@ pub enum SearchMode {
     SmallestFiles,
 }
 
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug, Copy)]
 pub enum DeleteMethod {
     None,
     Delete,
@@ -55,6 +56,7 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -76,6 +78,7 @@ pub struct BigFile {
 }
 
 impl BigFile {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             text_messages: Default::default(),
@@ -101,6 +104,7 @@ impl BigFile {
         self.delete_files();
         self.debug_print();
     }
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
@@ -109,14 +113,17 @@ impl BigFile {
         self.search_mode = search_mode;
     }
 
+    #[must_use]
     pub const fn get_big_files(&self) -> &Vec<(u64, FileEntry)> {
         &self.big_files
     }
 
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -190,8 +197,8 @@ impl BigFile {
                     let mut dir_result = vec![];
                     let mut warnings = vec![];
                     let mut fe_result = vec![];
-                    // Read current dir childrens
-                    let read_dir = match fs::read_dir(&current_folder) {
+                    // Read current dir children
+                    let read_dir = match fs::read_dir(current_folder) {
                         Ok(t) => t,
                         Err(e) => {
                             warnings.push(flc!(
@@ -354,7 +361,7 @@ impl BigFile {
             }
         }
 
-        Common::print_time(start_time, SystemTime::now(), "look_for_big_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "look_for_big_files");
         true
     }
 
@@ -387,7 +394,7 @@ impl BigFile {
         match self.delete_method {
             DeleteMethod::Delete => {
                 for (_, file_entry) in &self.big_files {
-                    if fs::remove_file(file_entry.path.clone()).is_err() {
+                    if fs::remove_file(&file_entry.path).is_err() {
                         self.text_messages.warnings.push(file_entry.path.display().to_string());
                     }
                 }
@@ -397,7 +404,7 @@ impl BigFile {
             }
         }
 
-        Common::print_time(start_time, SystemTime::now(), "delete_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "delete_files");
     }
 }
 
@@ -448,7 +455,7 @@ impl SaveResults for BigFile {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -459,7 +466,7 @@ impl SaveResults for BigFile {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
@@ -469,13 +476,13 @@ impl SaveResults for BigFile {
             } else {
                 write!(writer, "{} the smallest files.\n\n", self.information.number_of_real_files).unwrap();
             }
-            for (size, file_entry) in self.big_files.iter() {
-                writeln!(writer, "{} ({}) - {}", size.file_size(options::BINARY).unwrap(), size, file_entry.path.display()).unwrap();
+            for (size, file_entry) in &self.big_files {
+                writeln!(writer, "{} ({}) - {}", format_size(*size, BINARY), size, file_entry.path.display()).unwrap();
             }
         } else {
             write!(writer, "Not found any files.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -488,9 +495,9 @@ impl PrintResults for BigFile {
         } else {
             println!("{} the smallest files.\n\n", self.information.number_of_real_files);
         }
-        for (size, file_entry) in self.big_files.iter() {
-            println!("{} ({}) - {}", size.file_size(options::BINARY).unwrap(), size, file_entry.path.display());
+        for (size, file_entry) in &self.big_files {
+            println!("{} ({}) - {}", format_size(*size, BINARY), size, file_entry.path.display());
         }
-        Common::print_time(start_time, SystemTime::now(), "print_entries".to_string());
+        Common::print_time(start_time, SystemTime::now(), "print_entries");
     }
 }

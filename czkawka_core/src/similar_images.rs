@@ -12,7 +12,8 @@ use std::{fs, mem, thread};
 
 use bk_tree::BKTree;
 use crossbeam_channel::Receiver;
-use humansize::{file_size_opts as options, FileSize};
+use humansize::format_size;
+use humansize::BINARY;
 use image::GenericImageView;
 use image_hasher::{FilterType, HashAlg, HasherConfig};
 use rayon::prelude::*;
@@ -21,7 +22,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "heif")]
 use crate::common::get_dynamic_image_from_heic;
 use crate::common::{
-    create_crash_message, get_dynamic_image_from_raw_image, open_cache_folder, Common, HEIC_EXTENSIONS, IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS, LOOP_DURATION, RAW_IMAGE_EXTENSIONS,
+    create_crash_message, get_dynamic_image_from_raw_image, get_number_of_threads, open_cache_folder, Common, HEIC_EXTENSIONS, IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS, LOOP_DURATION,
+    RAW_IMAGE_EXTENSIONS,
 };
 use crate::common_directory::Directories;
 use crate::common_extensions::Extensions;
@@ -57,7 +59,7 @@ pub struct FileEntry {
 }
 
 /// Used by CLI tool when we cannot use directly values
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub enum SimilarityPreset {
     Original,
     VeryHigh,
@@ -117,14 +119,16 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
 }
 
-/// Method implementation for EmptyFolder
+/// Method implementation for `EmptyFolder`
 impl SimilarImages {
     /// New function providing basics values
+    #[must_use]
     pub fn new() -> Self {
         Self {
             information: Default::default(),
@@ -157,7 +161,7 @@ impl SimilarImages {
         self.hash_size = match hash_size {
             8 | 16 | 32 | 64 => hash_size,
             e => {
-                panic!("Invalid value of hash size {}", e);
+                panic!("Invalid value of hash size {e}");
             }
         }
     }
@@ -182,26 +186,32 @@ impl SimilarImages {
         self.save_also_as_json = save_also_as_json;
     }
 
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
 
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
 
+    #[must_use]
     pub const fn get_similar_images(&self) -> &Vec<Vec<FileEntry>> {
         &self.similar_vectors
     }
 
+    #[must_use]
     pub fn get_similar_images_referenced(&self) -> &Vec<(FileEntry, Vec<FileEntry>)> {
         &self.similar_referenced_vectors
     }
 
+    #[must_use]
     pub fn get_use_reference(&self) -> bool {
         self.use_reference_folders
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -268,7 +278,7 @@ impl SimilarImages {
     // }
 
     /// Function to check if folder are empty.
-    /// Parameter initial_checking for second check before deleting to be sure that checked folder is still empty
+    /// Parameter `initial_checking` for second check before deleting to be sure that checked folder is still empty
     fn check_for_similar_images(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
         let start_time: SystemTime = SystemTime::now();
         let mut folders_to_check: Vec<PathBuf> = Vec::with_capacity(1024 * 2); // This should be small enough too not see to big difference and big enough to store most of paths without needing to resize vector
@@ -305,7 +315,7 @@ impl SimilarImages {
                     .unbounded_send(ProgressData {
                         current_stage: 0,
                         max_stage: 3,
-                        images_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        images_checked: atomic_file_counter.load(Ordering::Relaxed),
                         images_to_check: 0,
                     })
                     .unwrap();
@@ -333,8 +343,8 @@ impl SimilarImages {
                     let mut dir_result = vec![];
                     let mut warnings = vec![];
                     let mut fe_result = vec![];
-                    // Read current dir childrens
-                    let read_dir = match fs::read_dir(&current_folder) {
+                    // Read current dir children
+                    let read_dir = match fs::read_dir(current_folder) {
                         Ok(t) => t,
                         Err(e) => {
                             warnings.push(flc!(
@@ -420,7 +430,7 @@ impl SimilarImages {
                                 let fe: FileEntry = FileEntry {
                                     path: current_file_name.clone(),
                                     size: metadata.len(),
-                                    dimensions: "".to_string(),
+                                    dimensions: String::new(),
                                     modified_date: match metadata.modified() {
                                         Ok(t) => match t.duration_since(UNIX_EPOCH) {
                                             Ok(d) => d.as_secs(),
@@ -469,7 +479,7 @@ impl SimilarImages {
         // End thread which send info to gui
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
-        Common::print_time(start_time, SystemTime::now(), "check_for_similar_images".to_string());
+        Common::print_time(start_time, SystemTime::now(), "check_for_similar_images");
         true
     }
 
@@ -512,11 +522,7 @@ impl SimilarImages {
             mem::swap(&mut self.images_to_check, &mut non_cached_files_to_check);
         }
 
-        Common::print_time(
-            hash_map_modification,
-            SystemTime::now(),
-            "sort_images - reading data from cache and preparing them".to_string(),
-        );
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - reading data from cache and preparing them");
         let hash_map_modification = SystemTime::now();
 
         //// PROGRESS THREAD START
@@ -535,7 +541,7 @@ impl SimilarImages {
                     .unbounded_send(ProgressData {
                         current_stage: 1,
                         max_stage: 3,
-                        images_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        images_checked: atomic_file_counter.load(Ordering::Relaxed),
                         images_to_check,
                     })
                     .unwrap();
@@ -627,15 +633,15 @@ impl SimilarImages {
                 Some(Some((file_entry, buf)))
             })
             .while_some()
-            .filter(|file_entry| file_entry.is_some())
-            .map(|file_entry| file_entry.unwrap())
+            .filter(Option::is_some)
+            .map(Option::unwrap)
             .collect::<Vec<(FileEntry, Vec<u8>)>>();
 
         // End thread which send info to gui
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
 
-        Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - reading data from files in parallel".to_string());
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - reading data from files in parallel");
         let hash_map_modification = SystemTime::now();
 
         // Just connect loaded results with already calculated hashes
@@ -672,7 +678,7 @@ impl SimilarImages {
             return false;
         }
 
-        Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - saving data to files".to_string());
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - saving data to files");
         true
     }
 
@@ -715,7 +721,7 @@ impl SimilarImages {
                         .unbounded_send(ProgressData {
                             current_stage: 2,
                             max_stage: 2,
-                            images_checked: atomic_mode_counter.load(Ordering::Relaxed) as usize,
+                            images_checked: atomic_mode_counter.load(Ordering::Relaxed),
                             images_to_check: all_combinations_to_check,
                         })
                         .unwrap();
@@ -730,21 +736,66 @@ impl SimilarImages {
             //// PROGRESS THREAD END
 
             // Don't use hashes with multiple images in bktree, because they will always be master of group and cannot be find by other hashes
-            let mut additional_chunk_to_check: Vec<_> = Default::default();
-            let mut hashes_with_multiple_images: HashSet<_> = Default::default(); // Fast way to check if hash have multiple imaages
-            for (hash, vec_files) in &all_hashed_images {
-                if vec_files.len() >= 2 {
-                    additional_chunk_to_check.push(hash);
-                    hashes_with_multiple_images.insert(hash);
-                } else {
-                    self.bktree.add(hash.to_vec());
-                }
-            }
+            let mut hashes_with_multiple_images: HashSet<_> = Default::default(); // Fast way to check if hash have multiple images
 
-            let number_of_processors = num_cpus::get();
-            let chunk_size = all_hashes.len() / number_of_processors;
-            let mut chunks: Vec<_> = if chunk_size > 0 { all_hashes.chunks(chunk_size).collect() } else { vec![&all_hashes] };
-            chunks.push(&additional_chunk_to_check);
+            let mut files_from_referenced_folders = HashMap::new();
+            let mut normal_files = HashMap::new();
+
+            let number_of_processors = get_number_of_threads();
+            let chunk_size;
+            let mut chunks: Vec<&[&Vec<u8>]>;
+
+            let mut initial_hashes: Vec<&Vec<u8>> = Vec::new();
+            let mut additional_chunk_to_check: Vec<&Vec<u8>> = Default::default();
+
+            if self.use_reference_folders {
+                let reference_directories = self.directories.reference_directories.clone();
+                all_hashed_images.clone().into_iter().for_each(|(hash, vec_file_entry)| {
+                    for file_entry in vec_file_entry {
+                        if reference_directories.iter().any(|e| file_entry.path.starts_with(e)) {
+                            files_from_referenced_folders.entry(hash.clone()).or_insert_with(Vec::new).push(file_entry);
+                        } else {
+                            normal_files.entry(hash.clone()).or_insert_with(Vec::new).push(file_entry);
+                        }
+                    }
+                });
+
+                for (hash, vec_files) in &normal_files {
+                    if vec_files.len() >= 2 {
+                        hashes_with_multiple_images.insert(hash);
+                    }
+                    self.bktree.add(hash.clone());
+                }
+                for (hash, vec_files) in &files_from_referenced_folders {
+                    if vec_files.len() >= 2 {
+                        hashes_with_multiple_images.insert(hash);
+                    }
+                    initial_hashes.push(hash);
+                }
+                chunk_size = initial_hashes.len() / number_of_processors;
+
+                chunks = if chunk_size > 0 {
+                    initial_hashes.chunks(chunk_size).collect::<Vec<_>>()
+                } else {
+                    vec![&initial_hashes]
+                };
+            } else {
+                for (hash, vec_files) in &all_hashed_images {
+                    if vec_files.len() >= 2 {
+                        additional_chunk_to_check.push(hash);
+                        hashes_with_multiple_images.insert(hash);
+                    } else {
+                        self.bktree.add(hash.clone());
+                    }
+                }
+                chunk_size = all_hashes.len() / number_of_processors;
+                chunks = if chunk_size > 0 {
+                    all_hashes.chunks(chunk_size).collect::<Vec<_>>()
+                } else {
+                    vec![&all_hashes]
+                };
+                chunks.push(&additional_chunk_to_check);
+            }
 
             let parts: Vec<_> = chunks
                 .into_par_iter()
@@ -762,7 +813,7 @@ impl SimilarImages {
                     for (index, hash_to_check) in hashes_to_check.iter().enumerate() {
                         // Don't check for user stop too often
                         // Also don't add too often data to atomic variable
-                        const CYCLES_COUNTER: usize = 0b111111;
+                        const CYCLES_COUNTER: usize = 0b11_1111;
                         if ((index & CYCLES_COUNTER) == CYCLES_COUNTER) && index != 0 {
                             atomic_mode_counter.fetch_add(CYCLES_COUNTER, Ordering::Relaxed);
                             if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
@@ -775,7 +826,7 @@ impl SimilarImages {
                         let mut found_items = self
                             .bktree
                             .find(hash_to_check, tolerance)
-                            .filter(|(similarity, _hash)| *similarity != 0)
+                            .filter(|(similarity, _hash)| if self.use_reference_folders { true } else { *similarity != 0 })
                             .collect::<Vec<_>>();
 
                         found_items.sort_unstable_by_key(|f| f.0);
@@ -793,7 +844,9 @@ impl SimilarImages {
                     }
 
                     #[cfg(debug_assertions)]
-                    debug_check_for_duplicated_things(hashes_parents.clone(), hashes_similarity.clone(), all_hashed_images.clone(), "BEFORE");
+                    if !self.use_reference_folders {
+                        debug_check_for_duplicated_things(&hashes_parents, &hashes_similarity, &all_hashed_images, "BEFORE");
+                    }
 
                     Some((hashes_parents, hashes_similarity))
                 })
@@ -839,7 +892,9 @@ impl SimilarImages {
                 }
 
                 #[cfg(debug_assertions)]
-                debug_check_for_duplicated_things(hashes_parents.clone(), hashes_similarity.clone(), all_hashed_images.clone(), "LATTER");
+                if !self.use_reference_folders {
+                    debug_check_for_duplicated_things(&hashes_parents, &hashes_similarity, &all_hashed_images, "LATTER");
+                }
 
                 // Just simple check if all original hashes with multiple entries are available in end results
                 let original_hashes_at_start = hashes_with_multiple_images.len();
@@ -847,22 +902,58 @@ impl SimilarImages {
                     .iter()
                     .filter(|(parent_hash, _child_number)| hashes_with_multiple_images.contains(*parent_hash))
                     .count();
-                assert_eq!(original_hashes_at_start, original_hashes_in_end_results);
-                // Collecting results to vector
-                for (parent_hash, child_number) in hashes_parents {
-                    // If hash contains other hasher OR multiple images are available for checked hash
-                    if child_number > 0 || hashes_with_multiple_images.contains(parent_hash) {
-                        let vec_fe = all_hashed_images.get(parent_hash).unwrap().clone();
-                        collected_similar_images.insert(parent_hash.clone(), vec_fe);
-                    }
+                if !self.use_reference_folders {
+                    assert_eq!(original_hashes_at_start, original_hashes_in_end_results);
                 }
 
-                for (child_hash, (parent_hash, similarity)) in hashes_similarity {
-                    let mut vec_fe = all_hashed_images.get(child_hash).unwrap().clone();
-                    for mut fe in &mut vec_fe {
-                        fe.similarity = similarity;
+                if self.use_reference_folders {
+                    // This is same step as without reference folders, but also checks if children are inside/outside reference directories, because may happen, that one file is inside reference folder and other outside
+
+                    // Collecting results to vector
+                    for (parent_hash, child_number) in hashes_parents {
+                        // If hash contains other hasher OR multiple images are available for checked hash
+                        if child_number > 0 || hashes_with_multiple_images.contains(parent_hash) {
+                            let vec_fe = all_hashed_images
+                                .get(parent_hash)
+                                .unwrap()
+                                .iter()
+                                .filter(|e| is_in_reference_folder(&self.directories.reference_directories, &e.path))
+                                .cloned()
+                                .collect();
+                            collected_similar_images.insert(parent_hash.clone(), vec_fe);
+                        }
                     }
-                    collected_similar_images.get_mut(parent_hash).unwrap().append(&mut vec_fe);
+
+                    for (child_hash, (parent_hash, similarity)) in hashes_similarity {
+                        let mut vec_fe: Vec<_> = all_hashed_images
+                            .get(child_hash)
+                            .unwrap()
+                            .iter()
+                            .filter(|e| !is_in_reference_folder(&self.directories.reference_directories, &e.path))
+                            .cloned()
+                            .collect();
+                        for mut fe in &mut vec_fe {
+                            fe.similarity = similarity;
+                        }
+                        collected_similar_images.get_mut(parent_hash).unwrap().append(&mut vec_fe);
+                    }
+                } else {
+                    // Collecting results to vector
+                    for (parent_hash, child_number) in hashes_parents {
+                        // If hash contains other hasher OR multiple images are available for checked hash
+                        if child_number > 0 || hashes_with_multiple_images.contains(parent_hash) {
+                            let vec_fe = all_hashed_images.get(parent_hash).unwrap().clone();
+                            collected_similar_images.insert(parent_hash.clone(), vec_fe);
+                        }
+                    }
+
+                    for (child_hash, (parent_hash, similarity)) in hashes_similarity {
+                        let mut vec_fe = all_hashed_images.get(child_hash).unwrap().clone();
+                        for mut fe in &mut vec_fe {
+                            fe.similarity = similarity;
+                        }
+                        collected_similar_images.get_mut(parent_hash).unwrap().append(&mut vec_fe);
+                    }
                 }
             }
         }
@@ -872,14 +963,14 @@ impl SimilarImages {
         {
             let mut result_hashset: HashSet<String> = Default::default();
             let mut found = false;
-            for (_hash, vec_file_entry) in collected_similar_images.iter() {
+            for vec_file_entry in collected_similar_images.values() {
                 if vec_file_entry.is_empty() {
-                    println!("Empty Element {:?}", vec_file_entry);
+                    println!("Empty Element {vec_file_entry:?}");
                     found = true;
                     continue;
                 }
                 if vec_file_entry.len() == 1 {
-                    println!("Single Element {:?}", vec_file_entry);
+                    println!("Single Element {vec_file_entry:?}");
                     found = true;
                     continue;
                 }
@@ -887,15 +978,13 @@ impl SimilarImages {
                     let st = file_entry.path.to_string_lossy().to_string();
                     if result_hashset.contains(&st) {
                         found = true;
-                        println!("Duplicated Element {}", st);
+                        println!("Duplicated Element {st}");
                     } else {
                         result_hashset.insert(st);
                     }
                 }
             }
-            if found {
-                panic!("Found Invalid entries");
-            }
+            assert!(!found, "Found Invalid entries");
         }
         self.similar_vectors = collected_similar_images.into_values().collect();
 
@@ -927,7 +1016,7 @@ impl SimilarImages {
                     let mut files_from_referenced_folders = Vec::new();
                     let mut normal_files = Vec::new();
                     for file_entry in vec_file_entry {
-                        if reference_directories.iter().any(|e| file_entry.path.starts_with(&e)) {
+                        if reference_directories.iter().any(|e| file_entry.path.starts_with(e)) {
                             files_from_referenced_folders.push(file_entry);
                         } else {
                             normal_files.push(file_entry);
@@ -943,7 +1032,7 @@ impl SimilarImages {
                 .collect::<Vec<(FileEntry, Vec<FileEntry>)>>();
         }
 
-        Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - selecting data from HashMap".to_string());
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_images - selecting data from HashMap");
 
         if self.use_reference_folders {
             for (_fe, vector) in &self.similar_referenced_vectors {
@@ -1023,7 +1112,7 @@ fn image_to_check<'a>(
         }
         // But when there is no record, just add it
         else {
-            need_to_add = true
+            need_to_add = true;
         }
     }
 
@@ -1036,6 +1125,10 @@ fn image_to_check<'a>(
             hashes_parents.insert(hash_to_check, 1);
         }
     }
+}
+
+fn is_in_reference_folder(reference_directories: &[PathBuf], path: &Path) -> bool {
+    reference_directories.iter().any(|e| path.starts_with(e))
 }
 
 impl Default for SimilarImages {
@@ -1070,7 +1163,7 @@ impl SaveResults for SimilarImages {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -1081,14 +1174,14 @@ impl SaveResults for SimilarImages {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
         if !self.similar_vectors.is_empty() {
             write!(writer, "{} images which have similar friends\n\n", self.similar_vectors.len()).unwrap();
 
-            for struct_similar in self.similar_vectors.iter() {
+            for struct_similar in &self.similar_vectors {
                 writeln!(writer, "Found {} images which have similar friends", self.similar_vectors.len()).unwrap();
                 for file_entry in struct_similar {
                     writeln!(
@@ -1096,7 +1189,7 @@ impl SaveResults for SimilarImages {
                         "{} - {} - {} - {}",
                         file_entry.path.display(),
                         file_entry.dimensions,
-                        file_entry.size.file_size(options::BINARY).unwrap(),
+                        format_size(file_entry.size, BINARY),
                         get_string_from_similarity(&file_entry.similarity, self.hash_size)
                     )
                     .unwrap();
@@ -1107,7 +1200,7 @@ impl SaveResults for SimilarImages {
             write!(writer, "Not found any similar images.").unwrap();
         }
 
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -1123,7 +1216,7 @@ impl PrintResults for SimilarImages {
                         "{} - {} - {} - {}",
                         file_entry.path.display(),
                         file_entry.dimensions,
-                        file_entry.size.file_size(options::BINARY).unwrap(),
+                        format_size(file_entry.size, BINARY),
                         get_string_from_similarity(&file_entry.similarity, self.hash_size)
                     );
                 }
@@ -1225,6 +1318,7 @@ fn get_cache_file(hash_size: &u8, hash_alg: &HashAlg, image_filter: &FilterType)
     )
 }
 
+#[must_use]
 pub fn get_string_from_similarity(similarity: &u32, hash_size: u8) -> String {
     let index_preset = match hash_size {
         8 => 0,
@@ -1273,6 +1367,7 @@ pub fn get_string_from_similarity(similarity: &u32, hash_size: u8) -> String {
     }
 }
 
+#[must_use]
 pub fn return_similarity_from_similarity_preset(similarity_preset: &SimilarityPreset, hash_size: u8) -> u32 {
     let index_preset = match hash_size {
         8 => 0,
@@ -1361,26 +1456,26 @@ pub fn test_image_conversion_speed() {
 // E.g. /a.jpg is used also as master and similar image which is forbidden, because may
 // cause accidentally delete more pictures that user wanted
 fn debug_check_for_duplicated_things(
-    hashes_parents: HashMap<&Vec<u8>, u32>,
-    hashes_similarity: HashMap<&Vec<u8>, (&Vec<u8>, u32)>,
-    all_hashed_images: HashMap<Vec<u8>, Vec<FileEntry>>,
+    hashes_parents: &HashMap<&Vec<u8>, u32>,
+    hashes_similarity: &HashMap<&Vec<u8>, (&Vec<u8>, u32)>,
+    all_hashed_images: &HashMap<Vec<u8>, Vec<FileEntry>>,
     numm: &str,
 ) {
     let mut found_broken_thing = false;
     let mut hashmap_hashes: HashSet<_> = Default::default();
     let mut hashmap_names: HashSet<_> = Default::default();
-    for (hash, number_of_children) in &hashes_parents {
+    for (hash, number_of_children) in hashes_parents {
         if *number_of_children > 0 {
             if hashmap_hashes.contains(*hash) {
                 println!("------1--HASH--{}  {:?}", numm, all_hashed_images.get(*hash).unwrap());
                 found_broken_thing = true;
             }
-            hashmap_hashes.insert(hash.to_vec());
+            hashmap_hashes.insert((*hash).clone());
 
             for i in all_hashed_images.get(*hash).unwrap() {
                 let name = i.path.to_string_lossy().to_string();
                 if hashmap_names.contains(&name) {
-                    println!("------1--NAME--{}  {:?}", numm, name);
+                    println!("------1--NAME--{numm}  {name:?}");
                     found_broken_thing = true;
                 }
                 hashmap_names.insert(name);
@@ -1392,12 +1487,12 @@ fn debug_check_for_duplicated_things(
             println!("------2--HASH--{}  {:?}", numm, all_hashed_images.get(*hash).unwrap());
             found_broken_thing = true;
         }
-        hashmap_hashes.insert(hash.to_vec());
+        hashmap_hashes.insert((*hash).clone());
 
         for i in all_hashed_images.get(*hash).unwrap() {
             let name = i.path.to_string_lossy().to_string();
             if hashmap_names.contains(&name) {
-                println!("------2--NAME--{}  {:?}", numm, name);
+                println!("------2--NAME--{numm}  {name:?}");
                 found_broken_thing = true;
             }
             hashmap_names.insert(name);

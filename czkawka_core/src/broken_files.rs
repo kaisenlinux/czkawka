@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, mem, panic, thread};
 
 use crossbeam_channel::Receiver;
+use pdf::object::ParseOptions;
 use pdf::PdfError;
 use pdf::PdfError::Try;
 use rayon::prelude::*;
@@ -33,7 +34,7 @@ pub struct ProgressData {
     pub files_to_check: usize,
 }
 
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug, Copy)]
 pub enum DeleteMethod {
     None,
     Delete,
@@ -75,6 +76,7 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -98,6 +100,7 @@ pub struct BrokenFiles {
 }
 
 impl BrokenFiles {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             text_messages: Messages::new(),
@@ -131,10 +134,12 @@ impl BrokenFiles {
         self.debug_print();
     }
 
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
 
+    #[must_use]
     pub const fn get_broken_files(&self) -> &Vec<FileEntry> {
         &self.broken_files
     }
@@ -143,10 +148,12 @@ impl BrokenFiles {
         self.checked_types = checked_types;
     }
 
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -212,7 +219,7 @@ impl BrokenFiles {
                     .unbounded_send(ProgressData {
                         current_stage: 0,
                         max_stage: 1,
-                        files_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        files_checked: atomic_file_counter.load(Ordering::Relaxed),
                         files_to_check: 0,
                     })
                     .unwrap();
@@ -240,8 +247,8 @@ impl BrokenFiles {
                     let mut dir_result = vec![];
                     let mut warnings = vec![];
                     let mut fe_result = vec![];
-                    // Read current dir childrens
-                    let read_dir = match fs::read_dir(&current_folder) {
+                    // Read current dir children
+                    let read_dir = match fs::read_dir(current_folder) {
                         Ok(t) => t,
                         Err(e) => {
                             warnings.push(flc!(
@@ -354,7 +361,7 @@ impl BrokenFiles {
                                 },
                                 size: metadata.len(),
                                 type_of_file,
-                                error_string: "".to_string(),
+                                error_string: String::new(),
                             };
 
                             fe_result.push((current_file_name.to_string_lossy().to_string(), fe));
@@ -381,7 +388,7 @@ impl BrokenFiles {
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
 
-        Common::print_time(start_time, SystemTime::now(), "check_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "check_files");
         true
     }
     fn look_for_broken_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
@@ -436,7 +443,7 @@ impl BrokenFiles {
                     .unbounded_send(ProgressData {
                         current_stage: 1,
                         max_stage: 1,
-                        files_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        files_checked: atomic_file_counter.load(Ordering::Relaxed),
                         files_to_check,
                     })
                     .unwrap();
@@ -515,49 +522,48 @@ impl BrokenFiles {
                         Err(_inspected) => Some(None),
                     },
 
-                    TypeOfFile::PDF => {
-                        match fs::read(&file_entry.path) {
-                            Ok(content) => {
-                                // Will be available in pdf > 0.7.2
-                                // let parser_options = ParseOptions {
-                                //     allow_error_in_option: true,
-                                //     allow_xref_error: true,
-                                //     allow_invalid_ops: true,
-                                //     allow_missing_endobj: true,
-                                // };
-                                // if let Err(e) = pdf::file::File::from_data_with_options(content, parser_options) {
+                    TypeOfFile::PDF => match fs::read(&file_entry.path) {
+                        Ok(content) => {
+                            let parser_options = ParseOptions::tolerant(); // Only show as broken files with really big bugs
 
-                                let mut file_entry_clone = file_entry.clone();
-                                let result = panic::catch_unwind(|| {
-                                    if let Err(e) = pdf::file::File::from_data(content) {
-                                        file_entry.error_string = e.to_string();
-                                        let error = unpack_pdf_error(e);
-                                        if let PdfError::InvalidPassword = error {
-                                            return Some(None);
+                            let mut file_entry_clone = file_entry.clone();
+                            let result = panic::catch_unwind(|| {
+                                if let Err(e) = pdf::file::File::from_data_with_options(content, parser_options) {
+                                    let mut error_string = e.to_string();
+                                    // Workaround for strange error message https://github.com/qarmin/czkawka/issues/898
+                                    if error_string.starts_with("Try at") {
+                                        if let Some(start_index) = error_string.find("/pdf-") {
+                                            error_string = format!("Decoding error in pdf-rs library - {}", &error_string[start_index..]);
                                         }
                                     }
-                                    Some(Some(file_entry))
-                                });
-                                if let Ok(pdf_result) = result {
-                                    pdf_result
-                                } else {
-                                    let message = create_crash_message("PDF-rs", &file_entry_clone.path.to_string_lossy(), "https://github.com/pdf-rs/pdf");
-                                    println!("{message}");
-                                    file_entry_clone.error_string = message;
-                                    Some(Some(file_entry_clone))
+
+                                    file_entry.error_string = error_string;
+                                    let error = unpack_pdf_error(e);
+                                    if let PdfError::InvalidPassword = error {
+                                        return Some(None);
+                                    }
                                 }
+                                Some(Some(file_entry))
+                            });
+                            if let Ok(pdf_result) = result {
+                                pdf_result
+                            } else {
+                                let message = create_crash_message("PDF-rs", &file_entry_clone.path.to_string_lossy(), "https://github.com/pdf-rs/pdf");
+                                println!("{message}");
+                                file_entry_clone.error_string = message;
+                                Some(Some(file_entry_clone))
                             }
-                            Err(_inspected) => Some(None),
                         }
-                    }
+                        Err(_inspected) => Some(None),
+                    },
 
                     // This means that cache read invalid value because maybe cache comes from different czkawka version
                     TypeOfFile::Unknown => Some(None),
                 }
             })
             .while_some()
-            .filter(|file_entry| file_entry.is_some())
-            .map(|file_entry| file_entry.unwrap())
+            .filter(Option::is_some)
+            .map(Option::unwrap)
             .collect::<Vec<FileEntry>>();
 
         // End thread which send info to gui
@@ -589,7 +595,7 @@ impl BrokenFiles {
 
         self.information.number_of_broken_files = self.broken_files.len();
 
-        Common::print_time(system_time, SystemTime::now(), "sort_images - reading data from files in parallel".to_string());
+        Common::print_time(system_time, SystemTime::now(), "sort_images - reading data from files in parallel");
 
         // Clean unused data
         self.files_to_check = Default::default();
@@ -602,7 +608,7 @@ impl BrokenFiles {
 
         match self.delete_method {
             DeleteMethod::Delete => {
-                for file_entry in self.broken_files.iter() {
+                for file_entry in &self.broken_files {
                     if fs::remove_file(&file_entry.path).is_err() {
                         self.text_messages.warnings.push(file_entry.path.display().to_string());
                     }
@@ -613,7 +619,7 @@ impl BrokenFiles {
             }
         }
 
-        Common::print_time(start_time, SystemTime::now(), "delete_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "delete_files");
     }
 }
 
@@ -663,7 +669,7 @@ impl SaveResults for BrokenFiles {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -674,19 +680,19 @@ impl SaveResults for BrokenFiles {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
         if !self.broken_files.is_empty() {
             writeln!(writer, "Found {} broken files.", self.information.number_of_broken_files).unwrap();
-            for file_entry in self.broken_files.iter() {
+            for file_entry in &self.broken_files {
                 writeln!(writer, "{} - {}", file_entry.path.display(), file_entry.error_string).unwrap();
             }
         } else {
             write!(writer, "Not found any broken files.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -697,11 +703,11 @@ impl PrintResults for BrokenFiles {
     fn print_results(&self) {
         let start_time: SystemTime = SystemTime::now();
         println!("Found {} broken files.\n", self.information.number_of_broken_files);
-        for file_entry in self.broken_files.iter() {
+        for file_entry in &self.broken_files {
             println!("{} - {}", file_entry.path.display(), file_entry.error_string);
         }
 
-        Common::print_time(start_time, SystemTime::now(), "print_entries".to_string());
+        Common::print_time(start_time, SystemTime::now(), "print_entries");
     }
 }
 
@@ -809,7 +815,7 @@ fn unpack_pdf_error(e: PdfError) -> PdfError {
         file: _,
         line: _,
         column: _,
-        // context: _,
+        context: _,
         source,
     } = e
     {

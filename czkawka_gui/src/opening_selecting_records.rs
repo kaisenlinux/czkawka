@@ -12,7 +12,7 @@ pub fn opening_enter_function_ported_upper_directories(event_controller: &gtk4::
     let tree_view = event_controller.widget().downcast::<gtk4::TreeView>().unwrap();
     #[cfg(debug_assertions)]
     {
-        println!("key_code {}", key_code);
+        println!("key_code {key_code}");
     }
 
     match get_notebook_upper_enum_from_tree_view(&tree_view) {
@@ -31,12 +31,11 @@ pub fn opening_enter_function_ported_upper_directories(event_controller: &gtk4::
             panic!()
         }
     }
-    // false // True catches signal, and don't send it to function, e.g. up button is catched and don't move selection
+    // false // True catches signal, and don't send it to function, e.g. up button is caught and don't move selection
     Inhibit(false)
 }
 
 pub fn opening_middle_mouse_function(gesture_click: &GestureClick, _number_of_clicks: i32, _b: f64, _c: f64) {
-    println!("MIDDLE MOUSE BUTTON CLICKED");
     let tree_view = gesture_click.widget().downcast::<gtk4::TreeView>().unwrap();
 
     let nt_object = get_notebook_object_from_tree_view(&tree_view);
@@ -69,7 +68,7 @@ pub fn opening_enter_function_ported(event_controller: &gtk4::EventControllerKey
     let tree_view = event_controller.widget().downcast::<gtk4::TreeView>().unwrap();
     #[cfg(debug_assertions)]
     {
-        println!("key_code {}", key_code);
+        println!("key_code {key_code}");
     }
 
     let nt_object = get_notebook_object_from_tree_view(&tree_view);
@@ -81,7 +80,7 @@ pub fn opening_enter_function_ported(event_controller: &gtk4::EventControllerKey
         nt_object.column_selection,
         nt_object.column_header,
     );
-    Inhibit(false) // True catches signal, and don't send it to function, e.g. up button is catched and don't move selection
+    Inhibit(false) // True catches signal, and don't send it to function, e.g. up button is caught and don't move selection
 }
 
 pub fn opening_double_click_function(gesture_click: &GestureClick, number_of_clicks: i32, _b: f64, _c: f64) {
@@ -90,9 +89,9 @@ pub fn opening_double_click_function(gesture_click: &GestureClick, number_of_cli
     let nt_object = get_notebook_object_from_tree_view(&tree_view);
     if number_of_clicks == 2 {
         if gesture_click.current_button() == 1 {
-            common_open_function(&tree_view, nt_object.column_name, nt_object.column_path, OpenMode::PathAndName);
+            common_open_function(&tree_view, nt_object.column_name, nt_object.column_path, &OpenMode::PathAndName);
         } else if gesture_click.current_button() == 3 {
-            common_open_function(&tree_view, nt_object.column_name, nt_object.column_path, OpenMode::OnlyPath);
+            common_open_function(&tree_view, nt_object.column_name, nt_object.column_path, &OpenMode::OnlyPath);
         }
     }
 }
@@ -119,7 +118,7 @@ fn common_mark_function(tree_view: &gtk4::TreeView, column_selection: i32, colum
     }
 }
 
-fn common_open_function(tree_view: &gtk4::TreeView, column_name: i32, column_path: i32, opening_mode: OpenMode) {
+fn common_open_function(tree_view: &gtk4::TreeView, column_name: i32, column_path: i32, opening_mode: &OpenMode) {
     let selection = tree_view.selection();
     let (selected_rows, tree_model) = selection.selected_rows();
 
@@ -133,7 +132,7 @@ fn common_open_function(tree_view: &gtk4::TreeView, column_name: i32, column_pat
         };
 
         if let Err(e) = open::that(&end_path) {
-            println!("Failed to open file {}, reason {}", end_path, e);
+            println!("Failed to open file {end_path}, reason {e}");
         };
     }
 }
@@ -191,7 +190,7 @@ fn common_open_function_upper_directories(tree_view: &gtk4::TreeView, column_ful
         let full_path = tree_model.get::<String>(&tree_model.iter(tree_path).unwrap(), column_full_path);
 
         if let Err(e) = open::that(&full_path) {
-            println!("Failed to open file {}, reason {}", full_path, e);
+            println!("Failed to open file {full_path}, reason {e}");
         };
     }
 }
@@ -213,7 +212,7 @@ fn handle_tree_keypress_upper_directories(tree_view: &gtk4::TreeView, key_code: 
 fn handle_tree_keypress(tree_view: &gtk4::TreeView, key_code: u32, name_column: i32, path_column: i32, mark_column: i32, column_header: Option<i32>) {
     match key_code {
         KEY_ENTER => {
-            common_open_function(tree_view, name_column, path_column, OpenMode::PathAndName);
+            common_open_function(tree_view, name_column, path_column, &OpenMode::PathAndName);
         }
         KEY_SPACE => {
             common_mark_function(tree_view, mark_column, column_header);

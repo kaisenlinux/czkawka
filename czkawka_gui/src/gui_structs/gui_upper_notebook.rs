@@ -54,14 +54,14 @@ impl GuiUpperNotebook {
         let tree_view_excluded_directories: TreeView = TreeView::new();
 
         let evk_tree_view_included_directories: EventControllerKey = EventControllerKey::new();
-        tree_view_included_directories.add_controller(&evk_tree_view_included_directories);
+        tree_view_included_directories.add_controller(evk_tree_view_included_directories.clone());
         let evk_tree_view_excluded_directories: EventControllerKey = EventControllerKey::new();
-        tree_view_excluded_directories.add_controller(&evk_tree_view_excluded_directories);
+        tree_view_excluded_directories.add_controller(evk_tree_view_excluded_directories.clone());
 
         let gc_tree_view_included_directories: GestureClick = GestureClick::new();
-        tree_view_included_directories.add_controller(&gc_tree_view_included_directories);
+        tree_view_included_directories.add_controller(gc_tree_view_included_directories.clone());
         let gc_tree_view_excluded_directories: GestureClick = GestureClick::new();
-        tree_view_excluded_directories.add_controller(&gc_tree_view_excluded_directories);
+        tree_view_excluded_directories.add_controller(gc_tree_view_excluded_directories.clone());
 
         let entry_allowed_extensions: gtk4::Entry = builder.object("entry_allowed_extensions").unwrap();
         let entry_excluded_items: gtk4::Entry = builder.object("entry_excluded_items").unwrap();
@@ -158,7 +158,7 @@ impl GuiUpperNotebook {
         self.entry_general_maximal_size.set_tooltip_text(Some(&flg!("main_label_size_bytes_tooltip")));
 
         let vec_children: Vec<gtk4::Widget> = get_all_direct_children(&self.notebook_upper);
-        let vec_children: Vec<gtk4::Widget> = get_all_direct_children(&vec_children[1]);
+        let vec_children: Vec<gtk4::Widget> = get_all_direct_children(&vec_children[1]); // This is quite safe in GTK 4, because tab label is always second child
 
         // Change name of upper notebook tabs
         for (upper_enum, fl_thing) in [

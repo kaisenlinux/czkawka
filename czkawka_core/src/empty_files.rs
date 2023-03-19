@@ -28,6 +28,7 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -47,6 +48,7 @@ pub struct EmptyFiles {
 }
 
 impl EmptyFiles {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             text_messages: Messages::new(),
@@ -72,18 +74,22 @@ impl EmptyFiles {
         self.debug_print();
     }
 
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
 
+    #[must_use]
     pub const fn get_empty_files(&self) -> &Vec<FileEntry> {
         &self.empty_files
     }
 
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -144,7 +150,7 @@ impl EmptyFiles {
                 }
                 self.information.number_of_empty_files = self.empty_files.len();
                 self.text_messages.warnings.extend(warnings);
-                Common::print_time(start_time, SystemTime::now(), "check_files_name".to_string());
+                Common::print_time(start_time, SystemTime::now(), "check_files_name");
                 true
             }
             DirTraversalResult::SuccessFolders { .. } => {
@@ -171,7 +177,7 @@ impl EmptyFiles {
             }
         }
 
-        Common::print_time(start_time, SystemTime::now(), "delete_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "delete_files");
     }
 }
 
@@ -222,7 +228,7 @@ impl SaveResults for EmptyFiles {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -233,19 +239,19 @@ impl SaveResults for EmptyFiles {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
         if !self.empty_files.is_empty() {
             writeln!(writer, "Found {} empty files.", self.information.number_of_empty_files).unwrap();
-            for file_entry in self.empty_files.iter() {
+            for file_entry in &self.empty_files {
                 writeln!(writer, "{}", file_entry.path.display()).unwrap();
             }
         } else {
             write!(writer, "Not found any empty files.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -256,10 +262,10 @@ impl PrintResults for EmptyFiles {
     fn print_results(&self) {
         let start_time: SystemTime = SystemTime::now();
         println!("Found {} empty files.\n", self.information.number_of_empty_files);
-        for file_entry in self.empty_files.iter() {
+        for file_entry in &self.empty_files {
             println!("{}", file_entry.path.display());
         }
 
-        Common::print_time(start_time, SystemTime::now(), "print_entries".to_string());
+        Common::print_time(start_time, SystemTime::now(), "print_entries");
     }
 }

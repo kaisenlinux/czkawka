@@ -11,7 +11,8 @@ use std::{fs, mem, thread};
 
 use crossbeam_channel::Receiver;
 use ffmpeg_cmdline_utils::FfmpegErrorKind::FfmpegNotFound;
-use humansize::{file_size_opts as options, FileSize};
+use humansize::format_size;
+use humansize::BINARY;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use vid_dup_finder_lib::HashCreationErrorKind::DetermineVideo;
@@ -50,12 +51,12 @@ pub struct FileEntry {
 struct Hamming;
 
 impl bk_tree::Metric<Vec<u8>> for Hamming {
-    #[inline(always)]
+    #[inline]
     fn distance(&self, a: &Vec<u8>, b: &Vec<u8>) -> u32 {
         hamming::distance_fast(a, b).unwrap() as u32
     }
 
-    #[inline(always)]
+    #[inline]
     fn threshold_distance(&self, a: &Vec<u8>, b: &Vec<u8>, _threshold: u32) -> Option<u32> {
         Some(self.distance(a, b))
     }
@@ -92,14 +93,16 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
 }
 
-/// Method implementation for EmptyFolder
+/// Method implementation for `EmptyFolder`
 impl SimilarVideos {
     /// New function providing basics values
+    #[must_use]
     pub fn new() -> Self {
         Self {
             information: Default::default(),
@@ -134,16 +137,18 @@ impl SimilarVideos {
 
     pub fn set_tolerance(&mut self, tolerance: i32) {
         assert!((0..=MAX_TOLERANCE).contains(&tolerance));
-        self.tolerance = tolerance
+        self.tolerance = tolerance;
     }
     pub fn set_save_also_as_json(&mut self, save_also_as_json: bool) {
         self.save_also_as_json = save_also_as_json;
     }
 
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
 
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
@@ -152,10 +157,12 @@ impl SimilarVideos {
         self.allowed_extensions.set_allowed_extensions(allowed_extensions, &mut self.text_messages);
     }
 
+    #[must_use]
     pub const fn get_similar_videos(&self) -> &Vec<Vec<FileEntry>> {
         &self.similar_vectors
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -187,10 +194,12 @@ impl SimilarVideos {
             t => t,
         };
     }
+    #[must_use]
     pub fn get_similar_videos_referenced(&self) -> &Vec<(FileEntry, Vec<FileEntry>)> {
         &self.similar_referenced_vectors
     }
 
+    #[must_use]
     pub fn get_number_of_base_duplicated_files(&self) -> usize {
         if self.use_reference_folders {
             self.similar_referenced_vectors.len()
@@ -199,6 +208,7 @@ impl SimilarVideos {
         }
     }
 
+    #[must_use]
     pub fn get_use_reference(&self) -> bool {
         self.use_reference_folders
     }
@@ -237,7 +247,7 @@ impl SimilarVideos {
     // }
 
     /// Function to check if folder are empty.
-    /// Parameter initial_checking for second check before deleting to be sure that checked folder is still empty
+    /// Parameter `initial_checking` for second check before deleting to be sure that checked folder is still empty
     fn check_for_similar_videos(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
         let start_time: SystemTime = SystemTime::now();
         let mut folders_to_check: Vec<PathBuf> = Vec::with_capacity(1024 * 2); // This should be small enough too not see to big difference and big enough to store most of paths without needing to resize vector
@@ -270,7 +280,7 @@ impl SimilarVideos {
                     .unbounded_send(ProgressData {
                         current_stage: 0,
                         max_stage: 1,
-                        videos_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        videos_checked: atomic_file_counter.load(Ordering::Relaxed),
                         videos_to_check: 0,
                     })
                     .unwrap();
@@ -298,8 +308,8 @@ impl SimilarVideos {
                     let mut dir_result = vec![];
                     let mut warnings = vec![];
                     let mut fe_result = vec![];
-                    // Read current dir childrens
-                    let read_dir = match fs::read_dir(&current_folder) {
+                    // Read current dir children
+                    let read_dir = match fs::read_dir(current_folder) {
                         Ok(t) => t,
                         Err(e) => {
                             warnings.push(flc!(
@@ -381,6 +391,7 @@ impl SimilarVideos {
                                 if self.excluded_items.is_excluded(&current_file_name) {
                                     continue 'dir;
                                 }
+                                let current_file_name_str = current_file_name.to_string_lossy().to_string();
 
                                 let fe: FileEntry = FileEntry {
                                     path: current_file_name.clone(),
@@ -391,7 +402,7 @@ impl SimilarVideos {
                                             Err(_inspected) => {
                                                 warnings.push(flc!(
                                                     "core_file_modified_before_epoch",
-                                                    generate_translation_hashmap(vec![("name", current_file_name.display().to_string())])
+                                                    generate_translation_hashmap(vec![("name", current_file_name_str.clone())])
                                                 ));
                                                 0
                                             }
@@ -399,16 +410,16 @@ impl SimilarVideos {
                                         Err(e) => {
                                             warnings.push(flc!(
                                                 "core_file_no_modification_date",
-                                                generate_translation_hashmap(vec![("name", current_file_name.display().to_string()), ("reason", e.to_string())])
+                                                generate_translation_hashmap(vec![("name", current_file_name_str.clone()), ("reason", e.to_string())])
                                             ));
                                             0
                                         }
                                     },
                                     vhash: Default::default(),
-                                    error: "".to_string(),
+                                    error: String::new(),
                                 };
 
-                                fe_result.push((current_file_name.to_string_lossy().to_string(), fe));
+                                fe_result.push((current_file_name_str, fe));
                             }
                         }
                     }
@@ -432,7 +443,7 @@ impl SimilarVideos {
         // End thread which send info to gui
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
-        Common::print_time(start_time, SystemTime::now(), "check_for_similar_videos".to_string());
+        Common::print_time(start_time, SystemTime::now(), "check_for_similar_videos");
         true
     }
 
@@ -468,11 +479,7 @@ impl SimilarVideos {
             mem::swap(&mut self.videos_to_check, &mut non_cached_files_to_check);
         }
 
-        Common::print_time(
-            hash_map_modification,
-            SystemTime::now(),
-            "sort_videos - reading data from cache and preparing them".to_string(),
-        );
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - reading data from cache and preparing them");
         let hash_map_modification = SystemTime::now();
 
         //// PROGRESS THREAD START
@@ -491,7 +498,7 @@ impl SimilarVideos {
                     .unbounded_send(ProgressData {
                         current_stage: 1,
                         max_stage: 1,
-                        videos_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        videos_checked: atomic_file_counter.load(Ordering::Relaxed),
                         videos_to_check,
                     })
                     .unwrap();
@@ -518,7 +525,7 @@ impl SimilarVideos {
                     Ok(t) => t,
                     Err(e) => {
                         return {
-                            file_entry.error = format!("Failed to hash file, reason {}", e);
+                            file_entry.error = format!("Failed to hash file, reason {e}");
                             Some(file_entry)
                         };
                     }
@@ -535,7 +542,7 @@ impl SimilarVideos {
         progress_thread_run.store(false, Ordering::Relaxed);
         progress_thread_handle.join().unwrap();
 
-        Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - reading data from files in parallel".to_string());
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - reading data from files in parallel");
         let hash_map_modification = SystemTime::now();
 
         // Just connect loaded results with already calculated hashes
@@ -569,7 +576,7 @@ impl SimilarVideos {
             return false;
         }
 
-        Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - saving data to files".to_string());
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - saving data to files");
         let hash_map_modification = SystemTime::now();
 
         let match_group = vid_dup_finder_lib::search(vector_of_hashes, NormalizedTolerance::new(self.tolerance as f64 / 100.0f64));
@@ -606,7 +613,7 @@ impl SimilarVideos {
                     let mut files_from_referenced_folders = Vec::new();
                     let mut normal_files = Vec::new();
                     for file_entry in vec_file_entry {
-                        if reference_directories.iter().any(|e| file_entry.path.starts_with(&e)) {
+                        if reference_directories.iter().any(|e| file_entry.path.starts_with(e)) {
                             files_from_referenced_folders.push(file_entry);
                         } else {
                             normal_files.push(file_entry);
@@ -634,7 +641,7 @@ impl SimilarVideos {
             }
         }
 
-        Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - selecting data from BtreeMap".to_string());
+        Common::print_time(hash_map_modification, SystemTime::now(), "sort_videos - selecting data from BtreeMap");
 
         // Clean unused data
         self.videos_hashes = Default::default();
@@ -693,7 +700,7 @@ impl SaveResults for SimilarVideos {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -704,17 +711,17 @@ impl SaveResults for SimilarVideos {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
         if !self.similar_vectors.is_empty() {
             write!(writer, "{} videos which have similar friends\n\n", self.similar_vectors.len()).unwrap();
 
-            for struct_similar in self.similar_vectors.iter() {
+            for struct_similar in &self.similar_vectors {
                 writeln!(writer, "Found {} videos which have similar friends", self.similar_vectors.len()).unwrap();
                 for file_entry in struct_similar {
-                    writeln!(writer, "{} - {}", file_entry.path.display(), file_entry.size.file_size(options::BINARY).unwrap(),).unwrap();
+                    writeln!(writer, "{} - {}", file_entry.path.display(), format_size(file_entry.size, BINARY)).unwrap();
                 }
                 writeln!(writer).unwrap();
             }
@@ -722,7 +729,7 @@ impl SaveResults for SimilarVideos {
             write!(writer, "Not found any similar videos.").unwrap();
         }
 
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -734,7 +741,7 @@ impl PrintResults for SimilarVideos {
 
             for vec_file_entry in &self.similar_vectors {
                 for file_entry in vec_file_entry {
-                    println!("{} - {}", file_entry.path.display(), file_entry.size.file_size(options::BINARY).unwrap());
+                    println!("{} - {}", file_entry.path.display(), format_size(file_entry.size, BINARY));
                 }
                 println!();
             }
@@ -812,12 +819,13 @@ fn get_cache_file() -> String {
     "cache_similar_videos.bin".to_string()
 }
 
+#[must_use]
 pub fn check_if_ffmpeg_is_installed() -> bool {
-    let vid = "999999999999999999.txt";
+    let vid = "9999czekoczekoczekolada999.txt";
     if let Err(DetermineVideo {
         src_path: _a,
         error: FfmpegNotFound,
-    }) = VideoHash::from_path(&vid)
+    }) = VideoHash::from_path(vid)
     {
         return false;
     }

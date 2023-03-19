@@ -13,10 +13,16 @@ use crate::localizer_core::generate_translation_hashmap;
 use crate::notebook_enums::*;
 use crate::notebook_info::NOTEBOOKS_INFO;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Copy, Clone)]
 enum TypeOfTool {
     Hardlinking,
     Symlinking,
+}
+
+#[derive(Debug)]
+struct SymHardlinkData {
+    original_data: String,
+    files_to_symhardlink: Vec<String>,
 }
 
 pub fn connect_button_hardlink_symlink(gui_data: &GuiData) {
@@ -62,7 +68,7 @@ async fn sym_hard_link_things(gui_data: GuiData, hardlinking: TypeOfTool) {
 
     let check_button_settings_confirm_link = gui_data.settings.check_button_settings_confirm_link.clone();
 
-    if !check_if_anything_is_selected_async(tree_view, column_header, nb_object.column_selection).await {
+    if !check_if_anything_is_selected_async(tree_view, column_header, nb_object.column_selection) {
         return;
     }
 
@@ -80,7 +86,7 @@ async fn sym_hard_link_things(gui_data: GuiData, hardlinking: TypeOfTool) {
         nb_object.column_path,
         column_header,
         nb_object.column_selection,
-        hardlinking,
+        &hardlinking,
         &text_view_errors,
     );
 
@@ -91,7 +97,7 @@ async fn sym_hard_link_things(gui_data: GuiData, hardlinking: TypeOfTool) {
             } else {
                 image_preview_duplicates.hide();
             }
-            *preview_path.borrow_mut() = "".to_string();
+            *preview_path.borrow_mut() = String::new();
         }
         _ => {}
     }
@@ -103,18 +109,13 @@ fn hardlink_symlink(
     column_path: i32,
     column_header: i32,
     column_selection: i32,
-    hardlinking: TypeOfTool,
+    hardlinking: &TypeOfTool,
     text_view_errors: &TextView,
 ) {
     reset_text_view(text_view_errors);
 
     let model = get_list_store(tree_view);
 
-    #[derive(Debug)]
-    struct SymHardlinkData {
-        original_data: String,
-        files_to_symhardlink: Vec<String>,
-    }
     let mut vec_tree_path_to_remove: Vec<TreePath> = Vec::new(); // List of hardlinked files without its root
     let mut vec_symhardlink_data: Vec<SymHardlinkData> = Vec::new();
 
@@ -154,9 +155,7 @@ fn hardlink_symlink(
             }
 
             current_symhardlink_data = None;
-            if !model.iter_next(&current_iter) {
-                panic!("HEADER, shouldn't be a last item.");
-            }
+            assert!(model.iter_next(&current_iter), "HEADER, shouldn't be a last item.");
             continue;
         }
 
@@ -199,9 +198,9 @@ fn hardlink_symlink(
             break;
         }
     }
-    if hardlinking == TypeOfTool::Hardlinking {
+    if hardlinking == &TypeOfTool::Hardlinking {
         for symhardlink_data in vec_symhardlink_data {
-            for file_to_hardlink in symhardlink_data.files_to_symhardlink.into_iter() {
+            for file_to_hardlink in symhardlink_data.files_to_symhardlink {
                 if let Err(e) = make_hard_link(&PathBuf::from(&symhardlink_data.original_data), &PathBuf::from(&file_to_hardlink)) {
                     add_text_to_text_view(text_view_errors, format!("{} {}, reason {}", flg!("hardlink_failed"), file_to_hardlink, e).as_str());
                     continue;
@@ -210,7 +209,7 @@ fn hardlink_symlink(
         }
     } else {
         for symhardlink_data in vec_symhardlink_data {
-            for file_to_symlink in symhardlink_data.files_to_symhardlink.into_iter() {
+            for file_to_symlink in symhardlink_data.files_to_symhardlink {
                 if let Err(e) = fs::remove_file(&file_to_symlink) {
                     add_text_to_text_view(
                         text_view_errors,
@@ -263,7 +262,7 @@ fn hardlink_symlink(
 
 fn create_dialog_non_group(window_main: &gtk4::Window) -> Dialog {
     let dialog = Dialog::builder()
-        .title(&flg!("hard_sym_invalid_selection_title_dialog"))
+        .title(flg!("hard_sym_invalid_selection_title_dialog"))
         .transient_for(window_main)
         .modal(true)
         .build();
@@ -318,7 +317,7 @@ pub async fn check_if_changing_one_item_in_group_and_continue(tree_view: &gtk4::
         let confirmation_dialog = create_dialog_non_group(window_main);
 
         let response_type = confirmation_dialog.run_future().await;
-        if response_type != gtk4::ResponseType::Ok {
+        if response_type != ResponseType::Ok {
             confirmation_dialog.hide();
             confirmation_dialog.close();
             return false;
@@ -330,7 +329,7 @@ pub async fn check_if_changing_one_item_in_group_and_continue(tree_view: &gtk4::
     true
 }
 
-pub async fn check_if_anything_is_selected_async(tree_view: &gtk4::TreeView, column_header: i32, column_selection: i32) -> bool {
+pub fn check_if_anything_is_selected_async(tree_view: &gtk4::TreeView, column_header: i32, column_selection: i32) -> bool {
     let model = get_list_store(tree_view);
 
     if let Some(iter) = model.iter_first() {
@@ -355,7 +354,7 @@ pub async fn check_if_can_link_files(check_button_settings_confirm_link: &CheckB
         let (confirmation_dialog_link, check_button) = create_dialog_ask_for_linking(window_main);
 
         let response_type = confirmation_dialog_link.run_future().await;
-        if response_type == gtk4::ResponseType::Ok {
+        if response_type == ResponseType::Ok {
             if !check_button.is_active() {
                 check_button_settings_confirm_link.set_active(false);
             }
@@ -371,14 +370,12 @@ pub async fn check_if_can_link_files(check_button_settings_confirm_link: &CheckB
 }
 
 fn create_dialog_ask_for_linking(window_main: &gtk4::Window) -> (Dialog, CheckButton) {
-    let dialog = Dialog::builder().title(&flg!("hard_sym_link_title_dialog")).transient_for(window_main).modal(true).build();
+    let dialog = Dialog::builder().title(flg!("hard_sym_link_title_dialog")).transient_for(window_main).modal(true).build();
     let button_ok = dialog.add_button(&flg!("general_ok_button"), ResponseType::Ok);
     dialog.add_button(&flg!("general_close_button"), ResponseType::Cancel);
 
     let label: gtk4::Label = gtk4::Label::new(Some(&flg!("hard_sym_link_label")));
-    let check_button: CheckButton = CheckButton::with_label(&flg!("dialogs_ask_next_time"));
-    check_button.set_active(true);
-    check_button.set_halign(Align::Center);
+    let check_button: CheckButton = CheckButton::builder().label(flg!("dialogs_ask_next_time")).active(true).halign(Align::Center).build();
 
     button_ok.grab_focus();
 

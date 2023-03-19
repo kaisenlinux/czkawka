@@ -201,6 +201,11 @@ popover_custom_case_sensitive_check_button = 대소문자 구별
 popover_custom_all_in_group_label = 그룹의 모든 항목을 선택하지 않음
 popover_custom_mode_unselect = 사용자 지정 선택 해제
 popover_custom_mode_select = 사용자 지정 선택
+popover_sort_file_name = 파일 이름
+popover_sort_folder_name = 폴더 이름
+popover_sort_full_name = 본인 이름
+popover_sort_size = 파일 크기
+popover_sort_selection = 선택
 popover_invalid_regex = 정규표현식이 유효하지 않습니다.
 popover_valid_regex = 정규표현식이 유효합니다.
 # Bottom buttons
@@ -211,6 +216,7 @@ bottom_save_button = 저장
 bottom_symlink_button = 심볼릭 링크
 bottom_hardlink_button = 하드 링크
 bottom_move_button = 이동
+bottom_sort_button = 종류
 bottom_search_button_tooltip = 검색을 시작합니다.
 bottom_select_button_tooltip = 항목을 선택합니다. 오직 선택된 것만이 처리됩니다.
 bottom_delete_button_tooltip = 선택된 파일 또는 폴더를 삭제합니다.
@@ -223,10 +229,16 @@ bottom_hardlink_button_tooltip =
     하드 링크를 생성합니다.
     그룹 내에서 최소한 2개의 파일이 선택되어 있어야 합니다.
     첫 번째 파일은 그대로 남으며, 두 번째 이후 파일은 첫 번째 파일로 향하는 하드 링크가 됩니다.
+bottom_hardlink_button_not_available_tooltip =
+    Create hardlinks.
+    Button is disabled, because hardlinks cannot be created.
+    Hardlinks only works with administrator privileges on Windows, so be sure to run app as administrator.
+    If app already works with such privileges check for similar issues on Github.
 bottom_move_button_tooltip =
     선택된 디렉터리로 파일을 이동합니다.
     이 동작은 원본이 위치한 경로를 전부 무시하고, 선택한 경로로 파일을 전부 복사합니다.
     만일 2개 이상의 파일이 같은 이름을 가지고 있다면, 첫 번째 이후의 파일은 복사에 실패하고 오류 메시지를 보여줄 것입니다.
+bottom_sort_button_tooltip = Sorts files/folders according to selected method.
 bottom_show_errors_tooltip = 하단 텍스트 패널을 보이거나 숨깁니다.
 bottom_show_upper_notebook_tooltip = 상단 패널을 보이거나 숨깁니다.
 # Progress Window
@@ -250,6 +262,9 @@ header_about_button_tooltip = 이 앱에 대한 정보창을 엽니다.
 
 ## General
 
+settings_number_of_threads = Number of used threads
+settings_number_of_threads_tooltip = Number of used threads, 0 means that all available threads will be used.
+settings_label_restart = You need to restart app to apply settings!
 settings_ignore_other_filesystems = 다른 파일시스템 무시(Linux에서만)
 settings_ignore_other_filesystems_tooltip =
     검색할 디렉터리와 파일시스템이 다른 디렉터리를 무시합니다.

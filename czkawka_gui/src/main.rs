@@ -26,16 +26,19 @@ use connect_things::connect_change_language::*;
 use connect_things::connect_duplicate_buttons::connect_duplicate_combo_box;
 use connect_things::connect_header_buttons::*;
 use connect_things::connect_notebook_tabs::*;
-use connect_things::connect_popovers::*;
 use connect_things::connect_progress_window::*;
 use connect_things::connect_selection_of_directories::*;
 use connect_things::connect_settings::*;
 use connect_things::connect_show_hide_ui::*;
 use connect_things::connect_similar_image_size_change::*;
+use czkawka_core::common::{get_number_of_threads, set_number_of_threads};
 use czkawka_core::*;
 use gui_structs::gui_data::*;
 
 use crate::compute_results::*;
+use crate::connect_things::connect_button_sort::connect_button_sort;
+use crate::connect_things::connect_popovers_select::connect_popover_select;
+use crate::connect_things::connect_popovers_sort::connect_popover_sort;
 use crate::initialize_gui::*;
 use crate::language_functions::LANGUAGES_ALL;
 use crate::saving_loading::*;
@@ -62,15 +65,15 @@ mod taskbar_progress_win;
 mod tests;
 
 fn main() {
-    let application = Application::new(None, ApplicationFlags::HANDLES_OPEN | ApplicationFlags::HANDLES_COMMAND_LINE);
+    let application = Application::new(None::<String>, ApplicationFlags::HANDLES_OPEN | ApplicationFlags::HANDLES_COMMAND_LINE);
     application.connect_command_line(move |app, cmdline| {
-        build_ui(app, cmdline.arguments());
+        build_ui(app, &cmdline.arguments());
         0
     });
     application.run_with_args(&env::args().collect::<Vec<_>>());
 }
 
-fn build_ui(application: &Application, arguments: Vec<OsString>) {
+fn build_ui(application: &Application, arguments: &[OsString]) {
     let mut gui_data: GuiData = GuiData::new_with_application(application);
 
     // Used for getting data from thread
@@ -133,8 +136,10 @@ fn build_ui(application: &Application, arguments: Vec<OsString>) {
         &gui_data.settings,
         &gui_data.text_view_errors,
         &gui_data.scrolled_window_errors,
-        arguments.clone(),
+        arguments,
     );
+    set_number_of_threads(gui_data.settings.scale_settings_number_of_threads.value().round() as usize);
+    println!("Set thread number to {}", get_number_of_threads());
 
     // Needs to run when entire GUI is initialized
     connect_change_language(&gui_data);
@@ -157,6 +162,7 @@ fn build_ui(application: &Application, arguments: Vec<OsString>) {
         futures_sender_bad_extensions,
     );
     connect_button_select(&gui_data);
+    connect_button_sort(&gui_data);
     connect_button_stop(&gui_data);
     connect_button_hardlink_symlink(&gui_data);
     connect_button_move(&gui_data);
@@ -165,7 +171,8 @@ fn build_ui(application: &Application, arguments: Vec<OsString>) {
     connect_duplicate_combo_box(&gui_data);
     connect_notebook_tabs(&gui_data);
     connect_selection_of_directories(&gui_data);
-    connect_popovers(&gui_data);
+    connect_popover_select(&gui_data);
+    connect_popover_sort(&gui_data);
     connect_compute_results(&gui_data, glib_stop_receiver);
     connect_progress_window(
         &gui_data,

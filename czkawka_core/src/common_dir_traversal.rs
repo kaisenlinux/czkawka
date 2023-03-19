@@ -53,7 +53,7 @@ pub struct SymlinkInfo {
     pub type_of_error: ErrorType,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Copy)]
 pub enum ErrorType {
     InfiniteRecursion,
     NonExistentFile,
@@ -62,7 +62,7 @@ pub enum ErrorType {
 // Empty folders
 
 /// Enum with values which show if folder is empty.
-/// In function "optimize_folders" automatically "Maybe" is changed to "Yes", so it is not necessary to put it here
+/// In function "`optimize_folders`" automatically "Maybe" is changed to "Yes", so it is not necessary to put it here
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub(crate) enum FolderEmptiness {
     No,
@@ -87,7 +87,7 @@ pub enum Collect {
     Files,
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Copy, Clone)]
 enum EntryType {
     File,
     Dir,
@@ -134,6 +134,7 @@ impl<'a, 'b> Default for DirTraversalBuilder<'a, 'b, ()> {
 }
 
 impl<'a, 'b> DirTraversalBuilder<'a, 'b, ()> {
+    #[must_use]
     pub fn new() -> DirTraversalBuilder<'a, 'b, ()> {
         DirTraversalBuilder {
             group_by: None,
@@ -154,67 +155,80 @@ impl<'a, 'b> DirTraversalBuilder<'a, 'b, ()> {
 }
 
 impl<'a, 'b, F> DirTraversalBuilder<'a, 'b, F> {
+    #[must_use]
     pub fn root_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
         self.root_dirs = dirs;
         self
     }
 
+    #[must_use]
     pub fn stop_receiver(mut self, stop_receiver: Option<&'a Receiver<()>>) -> Self {
         self.stop_receiver = stop_receiver;
         self
     }
 
+    #[must_use]
     pub fn progress_sender(mut self, progress_sender: Option<&'b futures::channel::mpsc::UnboundedSender<ProgressData>>) -> Self {
         self.progress_sender = progress_sender;
         self
     }
 
+    #[must_use]
     pub fn checking_method(mut self, checking_method: CheckingMethod) -> Self {
         self.checking_method = checking_method;
         self
     }
 
+    #[must_use]
     pub fn max_stage(mut self, max_stage: u8) -> Self {
         self.max_stage = max_stage;
         self
     }
 
+    #[must_use]
     pub fn minimal_file_size(mut self, minimal_file_size: u64) -> Self {
         self.minimal_file_size = Some(minimal_file_size);
         self
     }
 
+    #[must_use]
     pub fn maximal_file_size(mut self, maximal_file_size: u64) -> Self {
         self.maximal_file_size = Some(maximal_file_size);
         self
     }
 
+    #[must_use]
     pub fn collect(mut self, collect: Collect) -> Self {
         self.collect = collect;
         self
     }
 
+    #[must_use]
     pub fn directories(mut self, directories: Directories) -> Self {
         self.directories = Some(directories);
         self
     }
 
+    #[must_use]
     pub fn allowed_extensions(mut self, allowed_extensions: Extensions) -> Self {
         self.allowed_extensions = Some(allowed_extensions);
         self
     }
 
+    #[must_use]
     pub fn excluded_items(mut self, excluded_items: ExcludedItems) -> Self {
         self.excluded_items = Some(excluded_items);
         self
     }
 
+    #[must_use]
     pub fn recursive_search(mut self, recursive_search: bool) -> Self {
         self.recursive_search = recursive_search;
         self
     }
 
     #[cfg(target_family = "unix")]
+    #[must_use]
     pub fn exclude_other_filesystems(mut self, exclude_other_filesystems: bool) -> Self {
         match self.directories {
             Some(ref mut directories) => directories.set_exclude_other_filesystems(exclude_other_filesystems),
@@ -335,7 +349,7 @@ where
                         checking_method,
                         current_stage: 0,
                         max_stage,
-                        entries_checked: atomic_entry_counter.load(Ordering::Relaxed) as usize,
+                        entries_checked: atomic_entry_counter.load(Ordering::Relaxed),
                         entries_to_check: 0,
                     })
                     .unwrap();
@@ -378,8 +392,8 @@ where
                     let mut fe_result = vec![];
                     let mut set_as_not_empty_folder_list = vec![];
                     let mut folder_entries_list = vec![];
-                    // Read current dir childrens
-                    let read_dir = match fs::read_dir(&current_folder) {
+                    // Read current dir children
+                    let read_dir = match fs::read_dir(current_folder) {
                         Ok(t) => t,
                         Err(e) => {
                             warnings.push(flc!(
@@ -413,7 +427,7 @@ where
                             }
                         };
                         match (entry_type(&metadata), collect) {
-                            (EntryType::Dir, Collect::Files) | (EntryType::Dir, Collect::InvalidSymlinks) => {
+                            (EntryType::Dir, Collect::Files | Collect::InvalidSymlinks) => {
                                 if !recursive_search {
                                     continue 'dir;
                                 }
@@ -540,17 +554,17 @@ where
                                                 0
                                             }
                                         },
-                                        hash: "".to_string(),
+                                        hash: String::new(),
                                         symlink_info: None,
                                     };
 
                                     fe_result.push(fe);
                                 }
                             }
-                            (EntryType::File, Collect::EmptyFolders) | (EntryType::Symlink, Collect::EmptyFolders) => {
+                            (EntryType::File | EntryType::Symlink, Collect::EmptyFolders) => {
                                 #[cfg(target_family = "unix")]
                                 if directories.exclude_other_filesystems() {
-                                    match directories.is_on_other_filesystems(&current_folder) {
+                                    match directories.is_on_other_filesystems(current_folder) {
                                         Ok(true) => continue 'dir,
                                         Err(e) => warnings.push(e.to_string()),
                                         _ => (),
@@ -588,7 +602,7 @@ where
 
                                 #[cfg(target_family = "unix")]
                                 if directories.exclude_other_filesystems() {
-                                    match directories.is_on_other_filesystems(&current_folder) {
+                                    match directories.is_on_other_filesystems(current_folder) {
                                         Ok(true) => continue 'dir,
                                         Err(e) => warnings.push(e.to_string()),
                                         _ => (),
@@ -653,7 +667,7 @@ where
                                         }
                                     },
                                     size: 0,
-                                    hash: "".to_string(),
+                                    hash: String::new(),
                                     symlink_info: Some(SymlinkInfo { destination_path, type_of_error }),
                                 };
 
@@ -715,7 +729,7 @@ fn set_as_not_empty_folder(folder_entries: &mut BTreeMap<PathBuf, FolderEntry>, 
     // Loop to recursively set as non empty this and all his parent folders
     loop {
         d.is_empty = FolderEmptiness::No;
-        if d.parent_path != None {
+        if d.parent_path.is_some() {
             let cf = d.parent_path.clone().unwrap();
             d = folder_entries.get_mut(&cf).unwrap();
         } else {

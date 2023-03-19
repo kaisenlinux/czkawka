@@ -108,7 +108,7 @@ pub async fn delete_things(gui_data: GuiData) {
             } else {
                 image_preview_duplicates.hide();
             }
-            *preview_path.borrow_mut() = "".to_string();
+            *preview_path.borrow_mut() = String::new();
         }
         _ => {}
     }
@@ -124,7 +124,7 @@ pub async fn check_if_can_delete_files(
         let (confirmation_dialog_delete, check_button) = create_dialog_ask_for_deletion(window_main, number_of_selected_items, number_of_selected_groups);
 
         let response_type = confirmation_dialog_delete.run_future().await;
-        if response_type == gtk4::ResponseType::Ok {
+        if response_type == ResponseType::Ok {
             if !check_button.is_active() {
                 check_button_settings_confirm_deletion.set_active(false);
             }
@@ -140,7 +140,7 @@ pub async fn check_if_can_delete_files(
 }
 
 fn create_dialog_ask_for_deletion(window_main: &gtk4::Window, number_of_selected_items: u64, number_of_selected_groups: u64) -> (Dialog, CheckButton) {
-    let dialog = Dialog::builder().title(&flg!("delete_title_dialog")).transient_for(window_main).modal(true).build();
+    let dialog = Dialog::builder().title(flg!("delete_title_dialog")).transient_for(window_main).modal(true).build();
     let button_ok = dialog.add_button(&flg!("general_ok_button"), ResponseType::Ok);
     dialog.add_button(&flg!("general_close_button"), ResponseType::Cancel);
 
@@ -157,9 +157,13 @@ fn create_dialog_ask_for_deletion(window_main: &gtk4::Window, number_of_selected
             generate_translation_hashmap(vec![("items", number_of_selected_items.to_string()), ("groups", number_of_selected_groups.to_string())])
         ))),
     };
-    let check_button: CheckButton = CheckButton::with_label(&flg!("dialogs_ask_next_time"));
-    check_button.set_active(true);
-    check_button.set_halign(Align::Center);
+
+    let check_button: CheckButton = CheckButton::builder()
+        .label(flg!("dialogs_ask_next_time"))
+        .active(true)
+        .halign(Align::Center)
+        .margin_top(5)
+        .build();
 
     button_ok.grab_focus();
 
@@ -169,16 +173,13 @@ fn create_dialog_ask_for_deletion(window_main: &gtk4::Window, number_of_selected
     parent.insert_child_after(&label2, Some(&label));
     parent.insert_child_after(&check_button, Some(&label2));
 
-    // parent.set_margin(5); // TODO
-    check_button.set_margin_top(5);
-
     dialog.show();
     (dialog, check_button)
 }
 
 fn create_dialog_group_deletion(window_main: &gtk4::Window) -> (Dialog, CheckButton) {
     let dialog = Dialog::builder()
-        .title(&flg!("delete_all_files_in_group_title"))
+        .title(flg!("delete_all_files_in_group_title"))
         .transient_for(window_main)
         .modal(true)
         .build();
@@ -187,9 +188,7 @@ fn create_dialog_group_deletion(window_main: &gtk4::Window) -> (Dialog, CheckBut
 
     let label: gtk4::Label = gtk4::Label::new(Some(&flg!("delete_all_files_in_group_label1")));
     let label2: gtk4::Label = gtk4::Label::new(Some(&flg!("delete_all_files_in_group_label2")));
-    let check_button: CheckButton = CheckButton::with_label(&flg!("dialogs_ask_next_time"));
-    check_button.set_active(true);
-    check_button.set_halign(Align::Center);
+    let check_button: CheckButton = CheckButton::builder().label(flg!("dialogs_ask_next_time")).active(true).halign(Align::Center).build();
 
     button_ok.grab_focus();
 
@@ -245,22 +244,22 @@ pub async fn check_if_deleting_all_files_in_group(
 
     if !selected_all_records {
         return false;
-    } else {
-        let (confirmation_dialog_group_delete, check_button) = create_dialog_group_deletion(window_main);
+    }
 
-        let response_type = confirmation_dialog_group_delete.run_future().await;
-        if response_type == gtk4::ResponseType::Ok {
-            if !check_button.is_active() {
-                check_button_settings_confirm_group_deletion.set_active(false);
-            }
-        } else {
-            confirmation_dialog_group_delete.hide();
-            confirmation_dialog_group_delete.close();
-            return true;
+    let (confirmation_dialog_group_delete, check_button) = create_dialog_group_deletion(window_main);
+
+    let response_type = confirmation_dialog_group_delete.run_future().await;
+    if response_type == ResponseType::Ok {
+        if !check_button.is_active() {
+            check_button_settings_confirm_group_deletion.set_active(false);
         }
+    } else {
         confirmation_dialog_group_delete.hide();
         confirmation_dialog_group_delete.close();
+        return true;
     }
+    confirmation_dialog_group_delete.hide();
+    confirmation_dialog_group_delete.close();
 
     false
 }
@@ -294,7 +293,7 @@ pub fn empty_folder_remover(
         return; // No selected rows
     }
 
-    let mut messages: String = "".to_string();
+    let mut messages: String = String::new();
 
     // Must be deleted from end to start, because when deleting entries, TreePath(and also TreeIter) will points to invalid data
     for tree_path in selected_rows.iter().rev() {
@@ -334,7 +333,7 @@ pub fn empty_folder_remover(
                     }
                 };
                 if metadata.is_dir() {
-                    next_folder = "".to_owned()
+                    next_folder = String::new()
                         + &current_folder
                         + "/"
                         + match &entry_data.file_name().into_string() {
@@ -392,7 +391,7 @@ pub fn basic_remove(
 
     let model = get_list_store(tree_view);
 
-    let mut messages: String = "".to_string();
+    let mut messages: String = String::new();
 
     let mut selected_rows = Vec::new();
 
@@ -468,7 +467,7 @@ pub fn tree_remove(
 
     let model = get_list_store(tree_view);
 
-    let mut messages: String = "".to_string();
+    let mut messages: String = String::new();
 
     let mut vec_path_to_delete: Vec<(String, String)> = Vec::new();
     let mut map_with_path_to_delete: BTreeMap<String, Vec<String>> = Default::default(); // BTreeMap<Path,Vec<FileName>>

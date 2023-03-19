@@ -15,7 +15,7 @@ use crate::common_items::ExcludedItems;
 use crate::common_messages::Messages;
 use crate::common_traits::*;
 
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug, Copy)]
 pub enum DeleteMethod {
     None,
     Delete,
@@ -28,6 +28,7 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -47,6 +48,7 @@ pub struct InvalidSymlinks {
 }
 
 impl InvalidSymlinks {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             text_messages: Messages::new(),
@@ -71,18 +73,22 @@ impl InvalidSymlinks {
         self.debug_print();
     }
 
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
 
+    #[must_use]
     pub const fn get_invalid_symlinks(&self) -> &Vec<FileEntry> {
         &self.invalid_symlinks
     }
 
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -142,7 +148,7 @@ impl InvalidSymlinks {
                 }
                 self.information.number_of_invalid_symlinks = self.invalid_symlinks.len();
                 self.text_messages.warnings.extend(warnings);
-                Common::print_time(start_time, SystemTime::now(), "check_files_name".to_string());
+                Common::print_time(start_time, SystemTime::now(), "check_files_name");
                 true
             }
             DirTraversalResult::SuccessFolders { .. } => unreachable!(),
@@ -167,7 +173,7 @@ impl InvalidSymlinks {
             }
         }
 
-        Common::print_time(start_time, SystemTime::now(), "delete_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "delete_files");
     }
 }
 
@@ -218,7 +224,7 @@ impl SaveResults for InvalidSymlinks {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -229,13 +235,13 @@ impl SaveResults for InvalidSymlinks {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
         if !self.invalid_symlinks.is_empty() {
             writeln!(writer, "Found {} invalid symlinks.", self.information.number_of_invalid_symlinks).unwrap();
-            for file_entry in self.invalid_symlinks.iter() {
+            for file_entry in &self.invalid_symlinks {
                 writeln!(
                     writer,
                     "{}\t\t{}\t\t{}",
@@ -251,7 +257,7 @@ impl SaveResults for InvalidSymlinks {
         } else {
             write!(writer, "Not found any invalid symlinks.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -262,7 +268,7 @@ impl PrintResults for InvalidSymlinks {
     fn print_results(&self) {
         let start_time: SystemTime = SystemTime::now();
         println!("Found {} invalid symlinks.\n", self.information.number_of_invalid_symlinks);
-        for file_entry in self.invalid_symlinks.iter() {
+        for file_entry in &self.invalid_symlinks {
             println!(
                 "{}\t\t{}\t\t{}",
                 file_entry.path.display(),
@@ -274,6 +280,6 @@ impl PrintResults for InvalidSymlinks {
             );
         }
 
-        Common::print_time(start_time, SystemTime::now(), "print_entries".to_string());
+        Common::print_time(start_time, SystemTime::now(), "print_entries");
     }
 }

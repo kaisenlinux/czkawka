@@ -13,6 +13,29 @@ use imagepipe::{ImageSource, Pipeline};
 #[cfg(feature = "heif")]
 use libheif_rs::{Channel, ColorSpace, HeifContext, RgbChroma};
 
+static NUMBER_OF_THREADS: state::Storage<usize> = state::Storage::new();
+
+pub fn get_number_of_threads() -> usize {
+    let data = NUMBER_OF_THREADS.get();
+    if *data >= 1 {
+        *data
+    } else {
+        num_cpus::get()
+    }
+}
+pub fn set_default_number_of_threads() {
+    set_number_of_threads(num_cpus::get());
+}
+#[must_use]
+pub fn get_default_number_of_threads() -> usize {
+    num_cpus::get()
+}
+pub fn set_number_of_threads(thread_number: usize) {
+    NUMBER_OF_THREADS.set(thread_number);
+
+    rayon::ThreadPoolBuilder::new().num_threads(get_number_of_threads()).build_global().unwrap();
+}
+
 /// Class for common functions used across other class/functions
 pub const RAW_IMAGE_EXTENSIONS: &[&str] = &[
     ".mrw", ".arw", ".srf", ".sr2", ".mef", ".orf", ".srw", ".erf", ".kdc", ".kdc", ".dcs", ".rw2", ".raf", ".dcr", ".dng", ".pef", ".crw", ".iiq", ".3fr", ".nrw", ".nef", ".mos",
@@ -105,7 +128,7 @@ pub fn open_cache_folder(cache_file_name: &str, save_to_cache: bool, use_json: b
 pub fn get_dynamic_image_from_heic(path: &str) -> Result<DynamicImage> {
     let im = HeifContext::read_from_file(path)?;
     let handle = im.primary_image_handle()?;
-    let image = handle.decode(ColorSpace::Rgb(RgbChroma::Rgb), false)?;
+    let image = handle.decode(ColorSpace::Rgb(RgbChroma::Rgb), None)?;
     let width = image.width(Channel::Interleaved).map_err(|e| anyhow::anyhow!("{}", e))?;
     let height = image.height(Channel::Interleaved).map_err(|e| anyhow::anyhow!("{}", e))?;
     let planes = image.planes();
@@ -159,6 +182,7 @@ pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path> + std::fmt::Debug
     Some(DynamicImage::ImageRgb8(image))
 }
 
+#[must_use]
 pub fn split_path(path: &Path) -> (String, String) {
     match (path.parent(), path.file_name()) {
         (Some(dir), Some(file)) => (dir.display().to_string(), file.to_string_lossy().into_owned()),
@@ -167,6 +191,7 @@ pub fn split_path(path: &Path) -> (String, String) {
     }
 }
 
+#[must_use]
 pub fn create_crash_message(library_name: &str, file_path: &str, home_library_url: &str) -> String {
     format!("{library_name} library crashed when opening \"{file_path}\", please check if this is fixed with the latest version of {library_name} (e.g. with https://github.com/qarmin/crates_tester) and if it is not fixed, please report bug here - {home_library_url}")
 }
@@ -174,7 +199,7 @@ pub fn create_crash_message(library_name: &str, file_path: &str, home_library_ur
 impl Common {
     /// Printing time which took between start and stop point and prints also function name
     #[allow(unused_variables)]
-    pub fn print_time(start_time: SystemTime, end_time: SystemTime, function_name: String) {
+    pub fn print_time(start_time: SystemTime, end_time: SystemTime, function_name: &str) {
         #[cfg(debug_assertions)]
         println!(
             "Execution of function \"{}\" took {:?}",
@@ -183,30 +208,32 @@ impl Common {
         );
     }
 
+    #[must_use]
     pub fn delete_multiple_entries(entries: &[String]) -> Vec<String> {
         let mut path: &Path;
         let mut warnings: Vec<String> = Vec::new();
         for entry in entries {
             path = Path::new(entry);
             if path.is_dir() {
-                if let Err(e) = fs::remove_dir_all(&entry) {
-                    warnings.push(format!("Failed to remove folder {}, reason {}", entry, e));
+                if let Err(e) = fs::remove_dir_all(entry) {
+                    warnings.push(format!("Failed to remove folder {entry}, reason {e}"));
                 }
-            } else if let Err(e) = fs::remove_file(&entry) {
-                warnings.push(format!("Failed to remove file {}, reason {}", entry, e));
+            } else if let Err(e) = fs::remove_file(entry) {
+                warnings.push(format!("Failed to remove file {entry}, reason {e}"));
             }
         }
         warnings
     }
+    #[must_use]
     pub fn delete_one_entry(entry: &str) -> String {
         let path: &Path = Path::new(entry);
-        let mut warning: String = String::from("");
+        let mut warning: String = String::new();
         if path.is_dir() {
-            if let Err(e) = fs::remove_dir_all(&entry) {
-                warning = format!("Failed to remove folder {}, reason {}", entry, e)
+            if let Err(e) = fs::remove_dir_all(entry) {
+                warning = format!("Failed to remove folder {entry}, reason {e}");
             }
-        } else if let Err(e) = fs::remove_file(&entry) {
-            warning = format!("Failed to remove file {}, reason {}", entry, e)
+        } else if let Err(e) = fs::remove_file(entry) {
+            warning = format!("Failed to remove file {entry}, reason {e}");
         }
         warning
     }
@@ -241,7 +268,7 @@ impl Common {
         let mut position_of_splits: Vec<usize> = Vec::new();
 
         // `git*` shouldn't be true for `/gitsfafasfs`
-        if !expression.starts_with('*') && directory.find(&splits[0]).unwrap() > 0 {
+        if !expression.starts_with('*') && directory.find(splits[0]).unwrap() > 0 {
             return false;
         }
         // `*home` shouldn't be true for `/homeowner`
@@ -250,7 +277,7 @@ impl Common {
         }
 
         // At the end we check if parts between * are correctly positioned
-        position_of_splits.push(directory.find(&splits[0]).unwrap());
+        position_of_splits.push(directory.find(splits[0]).unwrap());
         let mut current_index: usize;
         let mut found_index: usize;
         for i in splits[1..].iter().enumerate() {

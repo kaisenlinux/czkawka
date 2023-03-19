@@ -26,7 +26,7 @@ pub struct ProgressData {
     pub files_checked: usize,
 }
 
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug, Copy)]
 pub enum DeleteMethod {
     None,
     Delete,
@@ -45,6 +45,7 @@ pub struct Info {
 }
 
 impl Info {
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -63,6 +64,7 @@ pub struct Temporary {
 }
 
 impl Temporary {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             text_messages: Messages::new(),
@@ -86,17 +88,21 @@ impl Temporary {
         self.delete_files();
         self.debug_print();
     }
+    #[must_use]
     pub fn get_stopped_search(&self) -> bool {
         self.stopped_search
     }
 
+    #[must_use]
     pub const fn get_temporary_files(&self) -> &Vec<FileEntry> {
         &self.temporary_files
     }
+    #[must_use]
     pub const fn get_text_messages(&self) -> &Messages {
         &self.text_messages
     }
 
+    #[must_use]
     pub const fn get_information(&self) -> &Info {
         &self.information
     }
@@ -151,7 +157,7 @@ impl Temporary {
                     .unbounded_send(ProgressData {
                         current_stage: 0,
                         max_stage: 0,
-                        files_checked: atomic_file_counter.load(Ordering::Relaxed) as usize,
+                        files_checked: atomic_file_counter.load(Ordering::Relaxed),
                     })
                     .unwrap();
                 if !progress_thread_run.load(Ordering::Relaxed) {
@@ -178,8 +184,8 @@ impl Temporary {
                     let mut dir_result = vec![];
                     let mut warnings = vec![];
                     let mut fe_result = vec![];
-                    // Read current dir childrens
-                    let read_dir = match fs::read_dir(&current_folder) {
+                    // Read current dir children
+                    let read_dir = match fs::read_dir(current_folder) {
                         Ok(t) => t,
                         Err(e) => {
                             warnings.push(flc!(
@@ -325,7 +331,7 @@ impl Temporary {
         progress_thread_handle.join().unwrap();
         self.information.number_of_temporary_files = self.temporary_files.len();
 
-        Common::print_time(start_time, SystemTime::now(), "check_files_size".to_string());
+        Common::print_time(start_time, SystemTime::now(), "check_files_size");
         true
     }
 
@@ -346,7 +352,7 @@ impl Temporary {
             }
         }
 
-        Common::print_time(start_time, SystemTime::now(), "delete_files".to_string());
+        Common::print_time(start_time, SystemTime::now(), "delete_files");
     }
 }
 
@@ -396,7 +402,7 @@ impl SaveResults for Temporary {
         let file_handler = match File::create(&file_name) {
             Ok(t) => t,
             Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {}, reason {}", file_name, e));
+                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
                 return false;
             }
         };
@@ -407,19 +413,19 @@ impl SaveResults for Temporary {
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
             self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
         ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {}, reason {}", file_name, e));
+            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
             return false;
         }
 
         if !self.temporary_files.is_empty() {
             writeln!(writer, "Found {} temporary files.", self.information.number_of_temporary_files).unwrap();
-            for file_entry in self.temporary_files.iter() {
+            for file_entry in &self.temporary_files {
                 writeln!(writer, "{}", file_entry.path.display()).unwrap();
             }
         } else {
             write!(writer, "Not found any temporary files.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file".to_string());
+        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
         true
     }
 }
@@ -428,10 +434,10 @@ impl PrintResults for Temporary {
     fn print_results(&self) {
         let start_time: SystemTime = SystemTime::now();
         println!("Found {} temporary files.\n", self.information.number_of_temporary_files);
-        for file_entry in self.temporary_files.iter() {
+        for file_entry in &self.temporary_files {
             println!("{}", file_entry.path.display());
         }
 
-        Common::print_time(start_time, SystemTime::now(), "print_entries".to_string());
+        Common::print_time(start_time, SystemTime::now(), "print_entries");
     }
 }

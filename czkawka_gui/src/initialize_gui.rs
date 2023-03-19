@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::ops::Deref;
+
 use std::path::Path;
 use std::rc::Rc;
 
@@ -31,24 +31,11 @@ use crate::opening_selecting_records::*;
 pub fn initialize_gui(gui_data: &mut GuiData) {
     //// Initialize button
     {
-        let buttons_search = gui_data.bottom_buttons.buttons_search.clone();
-        let buttons_save = gui_data.bottom_buttons.buttons_save.clone();
-        let buttons_delete = gui_data.bottom_buttons.buttons_delete.clone();
-        let buttons_select = gui_data.bottom_buttons.buttons_select.clone();
-        let buttons_symlink = gui_data.bottom_buttons.buttons_symlink.clone();
-        let buttons_hardlink = gui_data.bottom_buttons.buttons_hardlink.clone();
-        let buttons_move = gui_data.bottom_buttons.buttons_move.clone();
-        let buttons_compare = gui_data.bottom_buttons.buttons_compare.clone();
-
-        // Disable and show buttons - only search button should be visible
-        buttons_search.show();
-        buttons_save.hide();
-        buttons_delete.hide();
-        buttons_select.hide();
-        buttons_symlink.hide();
-        buttons_hardlink.hide();
-        buttons_move.hide();
-        buttons_compare.hide();
+        let buttons = &gui_data.bottom_buttons.buttons_array;
+        for button in buttons {
+            button.hide();
+        }
+        gui_data.bottom_buttons.buttons_search.show();
     }
     //// Initialize language combo box
     {
@@ -440,7 +427,7 @@ fn connect_event_mouse(gui_data: &GuiData) {
                 &text_view_errors,
                 &check_button_settings_show_preview,
                 &image_preview,
-                preview_path,
+                &preview_path,
                 nb_object.column_path,
                 nb_object.column_name,
             );
@@ -465,7 +452,7 @@ fn connect_event_mouse(gui_data: &GuiData) {
                 &text_view_errors,
                 &check_button_settings_show_preview,
                 &image_preview,
-                preview_path,
+                &preview_path,
                 nb_object.column_path,
                 nb_object.column_name,
             );
@@ -518,7 +505,7 @@ fn connect_event_buttons(gui_data: &GuiData) {
                 &text_view_errors,
                 &check_button_settings_show_preview,
                 &image_preview,
-                preview_path,
+                &preview_path,
                 nb_object.column_path,
                 nb_object.column_name,
             );
@@ -546,7 +533,7 @@ fn connect_event_buttons(gui_data: &GuiData) {
                 &text_view_errors,
                 &check_button_settings_show_preview_similar_images,
                 &image_preview,
-                preview_path,
+                &preview_path,
                 nb_object.column_path,
                 nb_object.column_name,
             );
@@ -559,7 +546,7 @@ fn show_preview(
     text_view_errors: &TextView,
     check_button_settings_show_preview: &CheckButton,
     image_preview: &Image,
-    preview_path: Rc<RefCell<String>>,
+    preview_path: &Rc<RefCell<String>>,
     column_path: i32,
     column_name: i32,
 ) {
@@ -581,7 +568,7 @@ fn show_preview(
 
             {
                 let preview_path = preview_path.borrow();
-                let preview_path = preview_path.deref();
+                let preview_path = &*preview_path;
                 if file_name == preview_path {
                     return; // Preview is already created, no need to recreate it
                 }
@@ -669,7 +656,7 @@ fn show_preview(
                 }
             };
 
-            pixbuf = match resize_pixbuf_dimension(pixbuf, (800, 800), InterpType::Nearest) {
+            pixbuf = match resize_pixbuf_dimension(&pixbuf, (800, 800), InterpType::Bilinear) {
                 None => {
                     add_text_to_text_view(
                         text_view_errors,
@@ -697,7 +684,7 @@ fn show_preview(
         image_preview.hide();
         {
             let mut preview_path = preview_path.borrow_mut();
-            *preview_path = "".to_string();
+            *preview_path = String::new();
         }
     }
 }
