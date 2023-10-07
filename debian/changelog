@@ -1,3 +1,9 @@
+czkawka (6.0.0-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 6.0.0 version
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sat, 07 Oct 2023 19:53:27 +0100
+
 czkawka (5.1.0-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 5.1.0 version

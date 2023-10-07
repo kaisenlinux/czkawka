@@ -1,12 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::io::BufReader;
 use std::path::PathBuf;
 
 use gdk4::gdk_pixbuf::{InterpType, Pixbuf};
 use glib::signal::Inhibit;
 use glib::Error;
 use gtk4::prelude::*;
-use gtk4::{ListStore, ScrollType, TextView, TreeView, Widget};
+use gtk4::{ListStore, Scale, ScrollType, TextView, TreeView, Widget};
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, EncodableLayout};
 use once_cell::sync::OnceCell;
@@ -244,11 +245,8 @@ pub fn get_string_from_list_store(tree_view: &TreeView, column_full_path: i32, c
 
     let mut string_vector: Vec<String> = Vec::new();
 
-    let tree_iter = match list_store.iter_first() {
-        Some(t) => t,
-        None => {
-            return string_vector;
-        }
+    let Some(tree_iter) = list_store.iter_first() else {
+        return string_vector;
     };
     match column_selection {
         Some(column_selection) => loop {
@@ -380,14 +378,34 @@ pub fn get_notebook_enum_from_tree_view(tree_view: &TreeView) -> NotebookMainEnu
         }
     }
 }
+pub fn get_tree_view_name_from_notebook_enum(notebook_enum: NotebookMainEnum) -> &'static str {
+    match notebook_enum {
+        NotebookMainEnum::Duplicate => "tree_view_duplicate_finder",
+        NotebookMainEnum::EmptyDirectories => "tree_view_empty_folder_finder",
+        NotebookMainEnum::EmptyFiles => "tree_view_empty_files_finder",
+        NotebookMainEnum::Temporary => "tree_view_temporary_files_finder",
+        NotebookMainEnum::BigFiles => "tree_view_big_files_finder",
+        NotebookMainEnum::SimilarImages => "tree_view_similar_images_finder",
+        NotebookMainEnum::SimilarVideos => "tree_view_similar_videos_finder",
+        NotebookMainEnum::SameMusic => "tree_view_same_music_finder",
+        NotebookMainEnum::Symlinks => "tree_view_invalid_symlinks",
+        NotebookMainEnum::BrokenFiles => "tree_view_broken_files",
+        NotebookMainEnum::BadExtensions => "tree_view_bad_extensions",
+    }
+}
 
 pub fn get_notebook_upper_enum_from_tree_view(tree_view: &TreeView) -> NotebookUpperEnum {
     match (*tree_view).widget_name().to_string().as_str() {
         "tree_view_upper_included_directories" => NotebookUpperEnum::IncludedDirectories,
         "tree_view_upper_excluded_directories" => NotebookUpperEnum::ExcludedDirectories,
-        e => {
-            panic!("{}", e)
-        }
+        e => panic!("{}", e),
+    }
+}
+pub fn get_tree_view_name_from_notebook_upper_enum(notebook_upper_enum: NotebookUpperEnum) -> &'static str {
+    match notebook_upper_enum {
+        NotebookUpperEnum::IncludedDirectories => "tree_view_upper_included_directories",
+        NotebookUpperEnum::ExcludedDirectories => "tree_view_upper_excluded_directories",
+        _ => panic!(),
     }
 }
 
@@ -717,7 +735,7 @@ const TYPE_OF_INTERPOLATION: InterpType = InterpType::Tiles;
 
 pub fn set_icon_of_button<P: IsA<Widget>>(button: &P, data: &'static [u8]) {
     let image = get_custom_image_from_widget(&button.clone());
-    let pixbuf = Pixbuf::from_read(std::io::BufReader::new(data)).unwrap();
+    let pixbuf = Pixbuf::from_read(BufReader::new(data)).unwrap();
     let pixbuf = pixbuf.scale_simple(SIZE_OF_ICON, SIZE_OF_ICON, TYPE_OF_INTERPOLATION).unwrap();
     image.set_from_pixbuf(Some(&pixbuf));
 }
@@ -772,7 +790,16 @@ pub fn check_if_list_store_column_have_all_same_values(list_store: &ListStore, c
     false
 }
 
-pub fn scale_step_function(scale: &gtk4::Scale, _scroll_type: ScrollType, value: f64) -> Inhibit {
+pub fn scale_set_min_max_values(scale: &Scale, minimum: f64, maximum: f64, current_value: f64, step: Option<f64>) {
+    scale.set_range(minimum, maximum);
+    scale.set_fill_level(maximum);
+    scale.set_value(current_value);
+    if let Some(step) = step {
+        scale.adjustment().set_step_increment(step);
+    }
+}
+
+pub fn scale_step_function(scale: &Scale, _scroll_type: ScrollType, value: f64) -> Inhibit {
     scale.set_increments(1_f64, 1_f64);
     scale.set_round_digits(0);
     scale.set_fill_level(value.round());
@@ -781,18 +808,50 @@ pub fn scale_step_function(scale: &gtk4::Scale, _scroll_type: ScrollType, value:
 
 #[cfg(test)]
 mod test {
+    use glib::types::Type;
+    use glib::Value;
     use gtk4::prelude::*;
-    use gtk4::Orientation;
+    use gtk4::{Orientation, TreeView};
     use image::DynamicImage;
 
     use crate::help_functions::{
         change_dimension_to_krotka, check_if_list_store_column_have_all_same_values, check_if_value_is_in_list_store, get_all_boxes_from_widget, get_all_direct_children,
-        get_max_file_name, get_pixbuf_from_dynamic_image,
+        get_max_file_name, get_pixbuf_from_dynamic_image, get_string_from_list_store,
     };
 
     #[gtk4::test]
+    fn test_get_string_from_list_store() {
+        let columns_types: &[Type] = &[Type::STRING];
+        let list_store = gtk4::ListStore::new(columns_types);
+        let tree_view = TreeView::with_model(&list_store);
+
+        let values_to_add: &[(u32, &dyn ToValue)] = &[(0, &"test"), (0, &"test2"), (0, &"test3")];
+        for i in values_to_add {
+            list_store.set(&list_store.append(), &[*i]);
+        }
+        assert_eq!(
+            get_string_from_list_store(&tree_view, 0, None),
+            vec!["test".to_string(), "test2".to_string(), "test3".to_string()]
+        );
+
+        let columns_types: &[Type] = &[Type::BOOL, Type::STRING];
+        let list_store = gtk4::ListStore::new(columns_types);
+        let tree_view = TreeView::with_model(&list_store);
+
+        let values_to_add: &[&[(u32, &dyn ToValue)]] = &[
+            &[(0, &Into::<Value>::into(true)), (1, &Into::<Value>::into("test"))],
+            &[(0, &Into::<Value>::into(true)), (1, &Into::<Value>::into("test2"))],
+            &[(0, &Into::<Value>::into(false)), (1, &Into::<Value>::into("test3"))],
+        ];
+        for i in values_to_add {
+            list_store.set(&list_store.append(), i);
+        }
+        assert_eq!(get_string_from_list_store(&tree_view, 1, Some(0)), vec!["test".to_string(), "test2".to_string()]);
+    }
+
+    #[gtk4::test]
     fn test_check_if_list_store_column_have_all_same_values() {
-        let columns_types: &[glib::types::Type] = &[glib::types::Type::BOOL];
+        let columns_types: &[Type] = &[Type::BOOL];
         let list_store = gtk4::ListStore::new(columns_types);
 
         list_store.clear();
@@ -826,7 +885,7 @@ mod test {
 
     #[gtk4::test]
     fn test_check_if_value_is_in_list_store() {
-        let columns_types: &[glib::types::Type] = &[glib::types::Type::STRING];
+        let columns_types: &[Type] = &[Type::STRING];
         let list_store = gtk4::ListStore::new(columns_types);
         let values_to_add: &[(u32, &dyn ToValue)] = &[(0, &"Koczkodan"), (0, &"Kachir")];
         for i in values_to_add {
@@ -836,7 +895,7 @@ mod test {
         assert!(check_if_value_is_in_list_store(&list_store, 0, "Kachir"));
         assert!(!check_if_value_is_in_list_store(&list_store, 0, "Koczkodan2"));
 
-        let columns_types: &[glib::types::Type] = &[glib::types::Type::STRING, glib::types::Type::STRING];
+        let columns_types: &[Type] = &[Type::STRING, Type::STRING];
         let list_store = gtk4::ListStore::new(columns_types);
         let values_to_add: &[&[(u32, &dyn ToValue)]] = &[&[(0, &"Koczkodan"), (1, &"Krakus")], &[(0, &"Kachir"), (1, &"Wodnica")]];
         for i in values_to_add {

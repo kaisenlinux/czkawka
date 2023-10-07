@@ -357,32 +357,13 @@ fn generate_cache_for_results(vector_with_path: Vec<(String, String, TreePath)>)
         let mut pixbuf = get_pixbuf_from_dynamic_image(&DynamicImage::new_rgb8(1, 1)).unwrap();
         let name_lowercase = name.to_lowercase();
         let is_heic = HEIC_EXTENSIONS.iter().any(|extension| name_lowercase.ends_with(extension));
-        let is_webp = name.to_lowercase().ends_with(".webp");
 
-        if is_heic || is_webp {
+        if is_heic {
             #[allow(clippy::never_loop)]
             'czystka: loop {
                 #[cfg(feature = "heif")]
                 if is_heic {
                     match get_dynamic_image_from_heic(&full_path) {
-                        Ok(t) => {
-                            match get_pixbuf_from_dynamic_image(&t) {
-                                Ok(t) => {
-                                    pixbuf = t;
-                                }
-                                Err(e) => {
-                                    println!("Failed to open image {full_path}, reason {e}");
-                                }
-                            };
-                        }
-                        Err(e) => {
-                            println!("Failed to open image {full_path}, reason {e}");
-                        }
-                    };
-                    break 'czystka;
-                }
-                if is_webp {
-                    match image::open(&full_path) {
                         Ok(t) => {
                             match get_pixbuf_from_dynamic_image(&t) {
                                 Ok(t) => {
@@ -414,19 +395,13 @@ fn generate_cache_for_results(vector_with_path: Vec<(String, String, TreePath)>)
 
         #[allow(clippy::never_loop)]
         loop {
-            let pixbuf_big = match resize_pixbuf_dimension(&pixbuf, (BIG_PREVIEW_SIZE, BIG_PREVIEW_SIZE), InterpType::Bilinear) {
-                None => {
-                    println!("Failed to resize image {full_path}.");
-                    break;
-                }
-                Some(pixbuf) => pixbuf,
+            let Some(pixbuf_big) = resize_pixbuf_dimension(&pixbuf, (BIG_PREVIEW_SIZE, BIG_PREVIEW_SIZE), InterpType::Bilinear) else {
+                println!("Failed to resize image {full_path}.");
+                break;
             };
-            let pixbuf_small = match resize_pixbuf_dimension(&pixbuf_big, (SMALL_PREVIEW_SIZE, SMALL_PREVIEW_SIZE), InterpType::Bilinear) {
-                None => {
-                    println!("Failed to resize image {full_path}.");
-                    break;
-                }
-                Some(pixbuf) => pixbuf,
+            let Some(pixbuf_small) = resize_pixbuf_dimension(&pixbuf_big, (SMALL_PREVIEW_SIZE, SMALL_PREVIEW_SIZE), InterpType::Bilinear) else {
+                println!("Failed to resize image {full_path}.");
+                break;
             };
 
             big_img.set_from_pixbuf(Some(&pixbuf_big));

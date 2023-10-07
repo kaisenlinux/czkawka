@@ -311,7 +311,6 @@ fn popover_custom_select_unselect(
         {
             let check_button_path = check_button_path.clone();
             let check_button_name = check_button_name.clone();
-            let check_button_rust_regex = check_button_rust_regex.clone();
             let entry_path = entry_path.clone();
             let entry_name = entry_name.clone();
             let entry_rust_regex = entry_rust_regex.clone();
@@ -393,9 +392,7 @@ fn popover_custom_select_unselect(
 
                     let model = get_list_store(&tree_view);
 
-                    let iter = if let Some(t) = model.iter_first() {
-                        t
-                    } else {
+                    let Some(iter) = model.iter_first() else {
                         confirmation_dialog_select_unselect.close();
                         return;
                     };

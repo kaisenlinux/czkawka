@@ -8,6 +8,8 @@
 use std::env;
 use std::ffi::OsString;
 
+use futures::channel::mpsc;
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gtk4::gio::ApplicationFlags;
 use gtk4::prelude::*;
 use gtk4::Application;
@@ -32,6 +34,7 @@ use connect_things::connect_settings::*;
 use connect_things::connect_show_hide_ui::*;
 use connect_things::connect_similar_image_size_change::*;
 use czkawka_core::common::{get_number_of_threads, set_number_of_threads};
+use czkawka_core::common_dir_traversal::ProgressData;
 use czkawka_core::*;
 use gui_structs::gui_data::*;
 
@@ -39,6 +42,7 @@ use crate::compute_results::*;
 use crate::connect_things::connect_button_sort::connect_button_sort;
 use crate::connect_things::connect_popovers_select::connect_popover_select;
 use crate::connect_things::connect_popovers_sort::connect_popover_sort;
+use crate::connect_things::connect_same_music_mode_changed::connect_same_music_change_mode;
 use crate::initialize_gui::*;
 use crate::language_functions::LANGUAGES_ALL;
 use crate::saving_loading::*;
@@ -80,50 +84,7 @@ fn build_ui(application: &Application, arguments: &[OsString]) {
     let (glib_stop_sender, glib_stop_receiver) = glib::MainContext::channel(glib::PRIORITY_DEFAULT);
 
     // Futures progress report
-    let (futures_sender_duplicate_files, futures_receiver_duplicate_files): (
-        futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<common_dir_traversal::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_empty_files, futures_receiver_empty_files): (
-        futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<common_dir_traversal::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_empty_folder, futures_receiver_empty_folder): (
-        futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<common_dir_traversal::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_big_file, futures_receiver_big_files): (
-        futures::channel::mpsc::UnboundedSender<big_file::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<big_file::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_same_music, futures_receiver_same_music): (
-        futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<common_dir_traversal::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_similar_images, futures_receiver_similar_images): (
-        futures::channel::mpsc::UnboundedSender<similar_images::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<similar_images::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_similar_videos, futures_receiver_similar_videos): (
-        futures::channel::mpsc::UnboundedSender<similar_videos::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<similar_videos::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_temporary, futures_receiver_temporary): (
-        futures::channel::mpsc::UnboundedSender<temporary::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<temporary::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_invalid_symlinks, futures_receiver_invalid_symlinks): (
-        futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<common_dir_traversal::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_broken_files, futures_receiver_broken_files): (
-        futures::channel::mpsc::UnboundedSender<broken_files::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<broken_files::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
-    let (futures_sender_bad_extensions, futures_receiver_bad_extensions): (
-        futures::channel::mpsc::UnboundedSender<common_dir_traversal::ProgressData>,
-        futures::channel::mpsc::UnboundedReceiver<common_dir_traversal::ProgressData>,
-    ) = futures::channel::mpsc::unbounded();
+    let (progress_sender, progress_receiver): (UnboundedSender<ProgressData>, UnboundedReceiver<ProgressData>) = mpsc::unbounded();
 
     initialize_gui(&mut gui_data);
     validate_notebook_data(&gui_data); // Must be run after initialization of gui, to check if everything was properly setup
@@ -146,21 +107,7 @@ fn build_ui(application: &Application, arguments: &[OsString]) {
 
     connect_button_delete(&gui_data);
     connect_button_save(&gui_data);
-    connect_button_search(
-        &gui_data,
-        glib_stop_sender,
-        futures_sender_duplicate_files,
-        futures_sender_empty_files,
-        futures_sender_empty_folder,
-        futures_sender_big_file,
-        futures_sender_same_music,
-        futures_sender_similar_images,
-        futures_sender_similar_videos,
-        futures_sender_temporary,
-        futures_sender_invalid_symlinks,
-        futures_sender_broken_files,
-        futures_sender_bad_extensions,
-    );
+    connect_button_search(&gui_data, glib_stop_sender, progress_sender);
     connect_button_select(&gui_data);
     connect_button_sort(&gui_data);
     connect_button_stop(&gui_data);
@@ -174,25 +121,13 @@ fn build_ui(application: &Application, arguments: &[OsString]) {
     connect_popover_select(&gui_data);
     connect_popover_sort(&gui_data);
     connect_compute_results(&gui_data, glib_stop_receiver);
-    connect_progress_window(
-        &gui_data,
-        futures_receiver_duplicate_files,
-        futures_receiver_empty_files,
-        futures_receiver_empty_folder,
-        futures_receiver_big_files,
-        futures_receiver_same_music,
-        futures_receiver_similar_images,
-        futures_receiver_similar_videos,
-        futures_receiver_temporary,
-        futures_receiver_invalid_symlinks,
-        futures_receiver_broken_files,
-        futures_receiver_bad_extensions,
-    );
+    connect_progress_window(&gui_data, progress_receiver);
     connect_show_hide_ui(&gui_data);
     connect_settings(&gui_data);
     connect_button_about(&gui_data);
     connect_about_buttons(&gui_data);
     connect_similar_image_size_change(&gui_data);
+    connect_same_music_change_mode(&gui_data);
 
     let window_main = gui_data.window_main.clone();
     let taskbar_state = gui_data.taskbar_state.clone();

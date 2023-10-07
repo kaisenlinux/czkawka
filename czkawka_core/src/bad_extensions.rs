@@ -2,19 +2,18 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufWriter;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread::sleep;
-use std::time::{Duration, SystemTime};
-use std::{mem, thread};
 
 use crossbeam_channel::Receiver;
+use futures::channel::mpsc::UnboundedSender;
 use mime_guess::get_mime_extensions;
 use rayon::prelude::*;
 
-use crate::common::{Common, LOOP_DURATION};
-use crate::common_dir_traversal::{CheckingMethod, DirTraversalBuilder, DirTraversalResult, FileEntry, ProgressData};
+use crate::common::{prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads};
+use crate::common_dir_traversal::{CheckingMethod, DirTraversalBuilder, DirTraversalResult, FileEntry, ProgressData, ToolType};
 use crate::common_directory::Directories;
 use crate::common_extensions::Extensions;
 use crate::common_items::ExcludedItems;
@@ -25,7 +24,7 @@ static DISABLED_EXTENSIONS: &[&str] = &["file", "cache", "bak", "data"]; // Such
 
 // This adds several workarounds for bugs/invalid recognizing types by external libraries
 // ("real_content_extension", "current_file_extension")
-static WORKAROUNDS: &[(&str, &str)] = &[
+const WORKAROUNDS: &[(&str, &str)] = &[
     // Wine/Windows
     ("der", "cat"),
     ("exe", "acm"),
@@ -125,6 +124,7 @@ static WORKAROUNDS: &[(&str, &str)] = &[
     ("xml", "vbox"),      // VirtualBox
     ("xml", "vbox-prev"), // VirtualBox
     ("xml", "vcproj"),    // VisualStudio
+    ("xml", "vcxproj"),   // VisualStudio
     ("xml", "xba"),       // Libreoffice
     ("xml", "xcd"),       // Libreoffice files
     ("zip", "apk"),       // Android apk
@@ -173,6 +173,7 @@ impl Info {
 }
 
 pub struct BadExtensions {
+    tool_type: ToolType,
     text_messages: Messages,
     information: Info,
     files_to_check: Vec<FileEntry>,
@@ -192,6 +193,7 @@ impl BadExtensions {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            tool_type: ToolType::BadExtensions,
             text_messages: Messages::new(),
             information: Info::new(),
             recursive_search: true,
@@ -208,7 +210,7 @@ impl BadExtensions {
         }
     }
 
-    pub fn find_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) {
+    pub fn find_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) {
         self.directories.optimize_directories(self.recursive_search, &mut self.text_messages);
         if !self.check_files(stop_receiver, progress_sender) {
             self.stopped_search = true;
@@ -283,7 +285,7 @@ impl BadExtensions {
         self.excluded_items.set_excluded_items(excluded_items, &mut self.text_messages);
     }
 
-    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
+    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
         let result = DirTraversalBuilder::new()
             .root_dirs(self.directories.included_directories.clone())
             .group_by(|_fe| ())
@@ -298,16 +300,12 @@ impl BadExtensions {
             .build()
             .run();
         match result {
-            DirTraversalResult::SuccessFiles {
-                start_time,
-                grouped_file_entries,
-                warnings,
-            } => {
+            DirTraversalResult::SuccessFiles { grouped_file_entries, warnings } => {
                 if let Some(files_to_check) = grouped_file_entries.get(&()) {
                     self.files_to_check = files_to_check.clone();
                 }
                 self.text_messages.warnings.extend(warnings);
-                Common::print_time(start_time, SystemTime::now(), "check_files");
+
                 true
             }
             DirTraversalResult::SuccessFolders { .. } => {
@@ -317,59 +315,50 @@ impl BadExtensions {
         }
     }
 
-    fn look_for_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
-        let system_time = SystemTime::now();
+    fn look_for_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
+        let (progress_thread_handle, progress_thread_run, atomic_counter, check_was_stopped) =
+            prepare_thread_handler_common(progress_sender, 1, 1, self.files_to_check.len(), CheckingMethod::None, self.tool_type);
 
-        let include_files_without_extension = self.include_files_without_extension;
-
-        let check_was_stopped = AtomicBool::new(false); // Used for breaking from GUI and ending check thread
-
-        //// PROGRESS THREAD START
-        let progress_thread_run = Arc::new(AtomicBool::new(true));
-        let atomic_file_counter = Arc::new(AtomicUsize::new(0));
-
-        let progress_thread_handle = if let Some(progress_sender) = progress_sender {
-            let progress_send = progress_sender.clone();
-            let progress_thread_run = progress_thread_run.clone();
-            let atomic_file_counter = atomic_file_counter.clone();
-            let entries_to_check = self.files_to_check.len();
-            thread::spawn(move || loop {
-                progress_send
-                    .unbounded_send(ProgressData {
-                        checking_method: CheckingMethod::None,
-                        current_stage: 1,
-                        max_stage: 1,
-                        entries_checked: atomic_file_counter.load(Ordering::Relaxed),
-                        entries_to_check,
-                    })
-                    .unwrap();
-                if !progress_thread_run.load(Ordering::Relaxed) {
-                    break;
-                }
-                sleep(Duration::from_millis(LOOP_DURATION as u64));
-            })
-        } else {
-            thread::spawn(|| {})
-        };
-
-        let mut files_to_check = Default::default();
-        mem::swap(&mut files_to_check, &mut self.files_to_check);
-        //// PROGRESS THREAD END
+        let files_to_check = mem::take(&mut self.files_to_check);
 
         let mut hashmap_workarounds: HashMap<&str, Vec<&str>> = Default::default();
         for (proper, found) in WORKAROUNDS {
-            // This should be enabled when items will have only 1 possible workaround items
+            // This should be enabled when items will have only 1 possible workaround items, but looks that some have 2 or even more, so at least for now this is disabled
             // if hashmap_workarounds.contains_key(found) {
             //     panic!("Already have {} key", found);
             // }
             hashmap_workarounds.entry(found).or_insert_with(Vec::new).push(proper);
         }
 
-        self.bad_extensions_files = files_to_check
+        self.bad_extensions_files = self.verify_extensions(files_to_check, &atomic_counter, stop_receiver, &check_was_stopped, &hashmap_workarounds);
+
+        send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
+
+        // Break if stop was clicked
+        if check_was_stopped.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        self.information.number_of_files_with_bad_extension = self.bad_extensions_files.len();
+
+        // Clean unused data
+        self.files_to_check = Default::default();
+
+        true
+    }
+
+    fn verify_extensions(
+        &self,
+        files_to_check: Vec<FileEntry>,
+        atomic_counter: &Arc<AtomicUsize>,
+        stop_receiver: Option<&Receiver<()>>,
+        check_was_stopped: &AtomicBool,
+        hashmap_workarounds: &HashMap<&str, Vec<&str>>,
+    ) -> Vec<BadFileEntry> {
+        files_to_check
             .into_par_iter()
             .map(|file_entry| {
-                println!("{:?}", file_entry.path);
-                atomic_file_counter.fetch_add(1, Ordering::Relaxed);
+                atomic_counter.fetch_add(1, Ordering::Relaxed);
                 if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
                     check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
@@ -385,69 +374,21 @@ impl BadExtensions {
                 };
                 let proper_extension = kind.extension();
 
-                // Extract current extension from file
-                let current_extension;
-                if let Some(extension) = file_entry.path.extension() {
-                    let extension = extension.to_string_lossy().to_lowercase();
-                    if DISABLED_EXTENSIONS.contains(&extension.as_str()) {
-                        return Some(None);
-                    }
-                    // Text longer than 10 characters is not considered as extension
-                    if extension.len() > 10 {
-                        current_extension = String::new();
-                    } else {
-                        current_extension = extension;
-                    }
-                } else {
-                    current_extension = String::new();
-                }
-
-                // Already have proper extension, no need to do more things
-                if current_extension == proper_extension {
+                let Some(current_extension) = self.get_and_validate_extension(&file_entry, proper_extension) else {
                     return Some(None);
-                }
+                };
 
                 // Check for all extensions that file can use(not sure if it is worth to do it)
-                let mut all_available_extensions: BTreeSet<&str> = Default::default();
-                let think_extension = if current_extension.is_empty() {
-                    String::new()
-                } else {
-                    for mim in mime_guess::from_ext(proper_extension) {
-                        if let Some(all_ext) = get_mime_extensions(&mim) {
-                            for ext in all_ext {
-                                all_available_extensions.insert(ext);
-                            }
-                        }
-                    }
-
-                    // Workarounds
-                    if let Some(vec_pre) = hashmap_workarounds.get(current_extension.as_str()) {
-                        for pre in vec_pre {
-                            if all_available_extensions.contains(pre) {
-                                all_available_extensions.insert(current_extension.as_str());
-                                break;
-                            }
-                        }
-                    }
-
-                    let mut guessed_multiple_extensions = format!("({proper_extension}) - ");
-                    for ext in &all_available_extensions {
-                        guessed_multiple_extensions.push_str(ext);
-                        guessed_multiple_extensions.push(',');
-                    }
-                    guessed_multiple_extensions.pop();
-
-                    guessed_multiple_extensions
-                };
+                let (mut all_available_extensions, valid_extensions) = self.check_for_all_extensions_that_file_can_use(hashmap_workarounds, &current_extension, proper_extension);
 
                 if all_available_extensions.is_empty() {
                     // Not found any extension
                     return Some(None);
                 } else if current_extension.is_empty() {
-                    if !include_files_without_extension {
+                    if !self.include_files_without_extension {
                         return Some(None);
                     }
-                } else if all_available_extensions.take(&current_extension.as_str()).is_some() {
+                } else if all_available_extensions.take(&current_extension).is_some() {
                     // Found proper extension
                     return Some(None);
                 }
@@ -457,31 +398,78 @@ impl BadExtensions {
                     modified_date: file_entry.modified_date,
                     size: file_entry.size,
                     current_extension,
-                    proper_extensions: think_extension,
+                    proper_extensions: valid_extensions,
                 }))
             })
             .while_some()
             .filter(Option::is_some)
             .map(Option::unwrap)
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
 
-        // End thread which send info to gui
-        progress_thread_run.store(false, Ordering::Relaxed);
-        progress_thread_handle.join().unwrap();
-
-        // Break if stop was clicked
-        if check_was_stopped.load(Ordering::Relaxed) {
-            return false;
+    fn get_and_validate_extension(&self, file_entry: &FileEntry, proper_extension: &str) -> Option<String> {
+        let current_extension;
+        // Extract current extension from file
+        if let Some(extension) = file_entry.path.extension() {
+            let extension = extension.to_string_lossy().to_lowercase();
+            if DISABLED_EXTENSIONS.contains(&extension.as_str()) {
+                return None;
+            }
+            // Text longer than 10 characters is not considered as extension
+            if extension.len() > 10 {
+                current_extension = String::new();
+            } else {
+                current_extension = extension;
+            }
+        } else {
+            current_extension = String::new();
         }
 
-        self.information.number_of_files_with_bad_extension = self.bad_extensions_files.len();
+        // Already have proper extension, no need to do more things
+        if current_extension == proper_extension {
+            return None;
+        }
+        Some(current_extension)
+    }
 
-        Common::print_time(system_time, SystemTime::now(), "bad extension finding");
+    fn check_for_all_extensions_that_file_can_use(
+        &self,
+        hashmap_workarounds: &HashMap<&str, Vec<&str>>,
+        current_extension: &str,
+        proper_extension: &str,
+    ) -> (BTreeSet<String>, String) {
+        let mut all_available_extensions: BTreeSet<String> = Default::default();
+        let valid_extensions = if current_extension.is_empty() {
+            String::new()
+        } else {
+            for mim in mime_guess::from_ext(proper_extension) {
+                if let Some(all_ext) = get_mime_extensions(&mim) {
+                    for ext in all_ext {
+                        all_available_extensions.insert((*ext).to_string());
+                    }
+                }
+            }
 
-        // Clean unused data
-        self.files_to_check = Default::default();
+            // Workarounds
+            if let Some(vec_pre) = hashmap_workarounds.get(current_extension) {
+                for pre in vec_pre {
+                    if all_available_extensions.contains(*pre) {
+                        all_available_extensions.insert(current_extension.to_string());
+                        break;
+                    }
+                }
+            }
 
-        true
+            let mut guessed_multiple_extensions = format!("({proper_extension}) - ");
+            for ext in &all_available_extensions {
+                guessed_multiple_extensions.push_str(ext);
+                guessed_multiple_extensions.push(',');
+            }
+            guessed_multiple_extensions.pop();
+
+            guessed_multiple_extensions
+        };
+        (all_available_extensions, valid_extensions)
     }
 }
 
@@ -519,7 +507,6 @@ impl DebugPrint for BadExtensions {
 
 impl SaveResults for BadExtensions {
     fn save_results_to_file(&mut self, file_name: &str) -> bool {
-        let start_time: SystemTime = SystemTime::now();
         let file_name: String = match file_name {
             "" => "results.txt".to_string(),
             k => k.to_string(),
@@ -551,7 +538,7 @@ impl SaveResults for BadExtensions {
         } else {
             write!(writer, "Not found any files with invalid extension.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
+
         true
     }
 }
@@ -560,12 +547,9 @@ impl PrintResults for BadExtensions {
     /// Print information's about duplicated entries
     /// Only needed for CLI
     fn print_results(&self) {
-        let start_time: SystemTime = SystemTime::now();
         println!("Found {} files with invalid extension.\n", self.information.number_of_files_with_bad_extension);
         for file_entry in &self.bad_extensions_files {
             println!("{} ----- {}", file_entry.path.display(), file_entry.proper_extensions);
         }
-
-        Common::print_time(start_time, SystemTime::now(), "print_entries");
     }
 }

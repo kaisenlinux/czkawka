@@ -32,7 +32,7 @@ One very straight-forward way to do this is by using [Homebrew](https://brew.sh/
 Installation in the terminal:
 ```shell
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install gtk4 adwaita-icon-theme ffmpeg librsvg libheif
+brew install gtk4 adwaita-icon-theme ffmpeg librsvg libheif pkg-config
 ```
 After that, go to the location where you downloaded Czkawka and add the `executable` permission to this file.
 ```shell
@@ -42,15 +42,32 @@ At the end execute it:
 ```shell
 ./mac_czkawka_gui
 ```
+#### Compiling on Apple Silicon
+Prebuilt binaries are available only for x86_64, so if you use ARM e.g. Mac M1/M2, you must compile the app manually.  
 
-**Warning**  
-Prebuilt binaries are available only for x86_64, so if you use ARM machine like e.g. Mac M1, you need to compile manually app.  
+**Compilation is simple, and takes less than 10 minutes on an M1/M2 mac.**
 
+```
+# Install Rust and Libraries
+brew install rustup
+rustup-init
+brew install gtk4 adwaita-icon-theme librsvg libheif pkg-config
+```
+```
+# Clone and Build
+git clone https://github.com/qarmin/czkawka.git
+cd czkawka
+cargo run --release --bin czkawka_gui
+```
+Credit to User [@bauchdj](https://github.com/bauchdj)
+
+#### x86 on ARM
 There is also a way to use x86_64 binaries on ARM, but this requires to install special version of required libraries probably via:
 ```shell
 arch -x86_64 /usr/local/bin/brew install gtk4 adwaita-icon-theme ffmpeg librsvg libheif
 ```
 Sadly this doesn't work for all users, so feel free to update this part of documentation(look at https://github.com/qarmin/czkawka/issues/689 and https://github.com/qarmin/czkawka/issues/637 for more info)
+
 
 ### Windows
 By default, all needed libraries are bundled with the app, inside `windows_czkawka_gui.zip`, but if you compile the app or just move `czkawka_gui.exe`, then you will need to install the `GTK 4`
@@ -63,6 +80,19 @@ FFmpeg to be able to use Similar Videos, you can download and install from this 
 Ready-to-go executables for Linux, Windows and macOS are available [**here**](https://github.com/qarmin/czkawka/releases/).  
 If the app does not run when clicking the launcher, run it through a terminal.  
 You don't need to have any additional libraries for CLI Czkawka.
+
+Install the GUI version on Linux:
+
+```shell
+# download
+curl --location https://github.com/qarmin/czkawka/releases/download/6.0.0/linux_czkawka_gui --output ~/.local/bin/linux_czkawka_gui
+# mark as executable
+chmod +x ~/.local/bin/linux_czkawka_gui
+# run
+linux_czkawka_gui
+```
+
+>**Note** This requires that the `$PATH` environment variable contains `~/.local/bin/`.
 
 ### Nightly Builds
 Artifacts from each commit can be downloaded [**here**](https://github.com/qarmin/czkawka/actions)

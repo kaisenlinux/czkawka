@@ -3,12 +3,11 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use crossbeam_channel::Receiver;
+use futures::channel::mpsc::UnboundedSender;
 
-use crate::common::Common;
-use crate::common_dir_traversal::{Collect, DirTraversalBuilder, DirTraversalResult, FolderEmptiness, FolderEntry, ProgressData};
+use crate::common_dir_traversal::{Collect, DirTraversalBuilder, DirTraversalResult, FolderEmptiness, FolderEntry, ProgressData, ToolType};
 use crate::common_directory::Directories;
 use crate::common_items::ExcludedItems;
 use crate::common_messages::Messages;
@@ -16,6 +15,8 @@ use crate::common_traits::{DebugPrint, PrintResults, SaveResults};
 
 /// Struct to store most basics info about all folder
 pub struct EmptyFolder {
+    #[allow(dead_code)]
+    tool_type: ToolType,
     information: Info,
     delete_folders: bool,
     text_messages: Messages,
@@ -44,6 +45,7 @@ impl EmptyFolder {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            tool_type: ToolType::EmptyFolders,
             information: Default::default(),
             delete_folders: false,
             text_messages: Messages::new(),
@@ -88,7 +90,7 @@ impl EmptyFolder {
         self.directories.set_excluded_directory(excluded_directory, &mut self.text_messages);
     }
     /// Public function used by CLI to search for empty folders
-    pub fn find_empty_folders(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) {
+    pub fn find_empty_folders(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) {
         self.directories.optimize_directories(true, &mut self.text_messages);
         if !self.check_for_empty_folders(stop_receiver, progress_sender) {
             self.stopped_search = true;
@@ -128,7 +130,7 @@ impl EmptyFolder {
 
     /// Function to check if folder are empty.
     /// Parameter `initial_checking` for second check before deleting to be sure that checked folder is still empty
-    fn check_for_empty_folders(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&futures::channel::mpsc::UnboundedSender<ProgressData>>) -> bool {
+    fn check_for_empty_folders(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
         let result = DirTraversalBuilder::new()
             .root_dirs(self.directories.included_directories.clone())
             .group_by(|_fe| ())
@@ -144,11 +146,7 @@ impl EmptyFolder {
             DirTraversalResult::SuccessFiles { .. } => {
                 unreachable!()
             }
-            DirTraversalResult::SuccessFolders {
-                start_time,
-                folder_entries,
-                warnings,
-            } => {
+            DirTraversalResult::SuccessFolders { folder_entries, warnings } => {
                 // We need to set empty folder list
                 #[allow(unused_mut)] // Used is later by Windows build
                 for (mut name, folder_entry) in folder_entries {
@@ -159,7 +157,6 @@ impl EmptyFolder {
 
                 self.text_messages.warnings.extend(warnings);
 
-                Common::print_time(start_time, SystemTime::now(), "check_for_empty_folder");
                 true
             }
             DirTraversalResult::Stopped => false,
@@ -168,7 +165,6 @@ impl EmptyFolder {
 
     /// Deletes earlier found empty folders
     fn delete_empty_folders(&mut self) {
-        let start_time: SystemTime = SystemTime::now();
         // Folders may be deleted or require too big privileges
         for name in self.empty_folder_list.keys() {
             match fs::remove_dir_all(name) {
@@ -176,8 +172,6 @@ impl EmptyFolder {
                 Err(e) => self.text_messages.warnings.push(format!("Failed to remove folder {}, reason {}", name.display(), e)),
             };
         }
-
-        Common::print_time(start_time, SystemTime::now(), "delete_files");
     }
 
     /// Set included dir which needs to be relative, exists etc.
@@ -210,7 +204,6 @@ impl DebugPrint for EmptyFolder {
 
 impl SaveResults for EmptyFolder {
     fn save_results_to_file(&mut self, file_name: &str) -> bool {
-        let start_time: SystemTime = SystemTime::now();
         let file_name: String = match file_name {
             "" => "results.txt".to_string(),
             k => k.to_string(),
@@ -247,7 +240,7 @@ impl SaveResults for EmptyFolder {
         } else {
             write!(writer, "Not found any empty folders.").unwrap();
         }
-        Common::print_time(start_time, SystemTime::now(), "save_results_to_file");
+
         true
     }
 }
