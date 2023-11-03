@@ -15,8 +15,6 @@ use czkawka_core::similar_images::SIMILAR_VALUES;
 use czkawka_core::similar_videos::MAX_TOLERANCE;
 
 use crate::create_tree_view::*;
-use crate::delete_things;
-use crate::flg;
 use crate::gui_structs::gui_data::*;
 use crate::help_combo_box::{
     DUPLICATES_CHECK_METHOD_COMBO_BOX, DUPLICATES_HASH_TYPE_COMBO_BOX, IMAGES_HASH_SIZE_COMBO_BOX, IMAGES_HASH_TYPE_COMBO_BOX, IMAGES_RESIZE_ALGORITHM_COMBO_BOX,
@@ -27,8 +25,9 @@ use crate::localizer_core::generate_translation_hashmap;
 use crate::notebook_enums::{NotebookMainEnum, NotebookUpperEnum};
 use crate::notebook_info::NOTEBOOKS_INFO;
 use crate::opening_selecting_records::*;
+use crate::{delete_things, flg};
 
-pub fn initialize_gui(gui_data: &mut GuiData) {
+pub fn initialize_gui(gui_data: &GuiData) {
     //// Initialize button
     {
         let buttons = &gui_data.bottom_buttons.buttons_array;
@@ -274,7 +273,7 @@ pub fn initialize_gui(gui_data: &mut GuiData) {
 
         window_progress.connect_close_request(move |_| {
             stop_sender.send(()).unwrap();
-            gtk4::Inhibit(true)
+            glib::Propagation::Stop
         });
     }
 

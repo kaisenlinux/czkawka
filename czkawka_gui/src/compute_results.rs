@@ -4,17 +4,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use chrono::NaiveDateTime;
+use fun_time::fun_time;
 use glib::Receiver;
 use gtk4::prelude::*;
 use gtk4::{Entry, ListStore, TextView, TreeView, Widget};
-use humansize::format_size;
-use humansize::BINARY;
+use humansize::{format_size, BINARY};
 
 use czkawka_core::bad_extensions::BadExtensions;
 use czkawka_core::big_file::BigFile;
 use czkawka_core::broken_files::BrokenFiles;
 use czkawka_core::common::split_path;
 use czkawka_core::common_dir_traversal::{CheckingMethod, FileEntry};
+use czkawka_core::common_tool::CommonData;
 use czkawka_core::duplicate::DuplicateFinder;
 use czkawka_core::empty_files::EmptyFiles;
 use czkawka_core::empty_folder::EmptyFolder;
@@ -225,10 +226,11 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
             }
         }
         // Returning false here would close the receiver and have senders fail
-        Continue(true)
+        glib::ControlFlow::Continue
     });
 }
 
+#[fun_time(message = "computer_bad_extensions", level = "debug")]
 fn computer_bad_extensions(
     be: BadExtensions,
     entry_info: &Entry,
@@ -302,6 +304,7 @@ fn computer_bad_extensions(
     }
 }
 
+#[fun_time(message = "computer_broken_files", level = "debug")]
 fn computer_broken_files(
     br: BrokenFiles,
     entry_info: &Entry,
@@ -375,6 +378,7 @@ fn computer_broken_files(
     }
 }
 
+#[fun_time(message = "computer_invalid_symlinks", level = "debug")]
 fn computer_invalid_symlinks(
     ifs: InvalidSymlinks,
     entry_info: &Entry,
@@ -446,6 +450,7 @@ fn computer_invalid_symlinks(
     }
 }
 
+#[fun_time(message = "computer_same_music", level = "debug")]
 fn computer_same_music(
     mf: SameMusic,
     entry_info: &Entry,
@@ -620,6 +625,7 @@ fn computer_same_music(
     }
 }
 
+#[fun_time(message = "computer_similar_videos", level = "debug")]
 fn computer_similar_videos(
     ff: SimilarVideos,
     entry_info: &Entry,
@@ -660,7 +666,7 @@ fn computer_similar_videos(
             if ff.get_use_reference() {
                 let vec_struct_similar = ff.get_similar_videos_referenced();
 
-                for (base_file_entry, vec_file_entry) in vec_struct_similar.iter() {
+                for (base_file_entry, vec_file_entry) in vec_struct_similar {
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
@@ -682,7 +688,7 @@ fn computer_similar_videos(
             } else {
                 let vec_struct_similar = ff.get_similar_videos();
 
-                for vec_file_entry in vec_struct_similar.iter() {
+                for vec_file_entry in vec_struct_similar {
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
@@ -721,6 +727,7 @@ fn computer_similar_videos(
     }
 }
 
+#[fun_time(message = "computer_similar_images", level = "debug")]
 fn computer_similar_images(
     sf: SimilarImages,
     entry_info: &Entry,
@@ -762,7 +769,7 @@ fn computer_similar_images(
 
             if sf.get_use_reference() {
                 let vec_struct_similar: &Vec<(similar_images::FileEntry, Vec<similar_images::FileEntry>)> = sf.get_similar_images_referenced();
-                for (base_file_entry, vec_file_entry) in vec_struct_similar.iter() {
+                for (base_file_entry, vec_file_entry) in vec_struct_similar {
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
@@ -805,7 +812,7 @@ fn computer_similar_images(
                 }
             } else {
                 let vec_struct_similar = sf.get_similar_images();
-                for vec_file_entry in vec_struct_similar.iter() {
+                for vec_file_entry in vec_struct_similar {
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
@@ -853,6 +860,7 @@ fn computer_similar_images(
     }
 }
 
+#[fun_time(message = "computer_temporary_files", level = "debug")]
 fn computer_temporary_files(
     tf: Temporary,
     entry_info: &Entry,
@@ -924,6 +932,7 @@ fn computer_temporary_files(
     }
 }
 
+#[fun_time(message = "computer_big_files", level = "debug")]
 fn computer_big_files(
     bf: BigFile,
     entry_info: &Entry,
@@ -957,11 +966,11 @@ fn computer_big_files(
 
             let vector = bf.get_big_files();
 
-            for (size, file_entry) in vector.iter() {
+            for file_entry in vector {
                 let (directory, file) = split_path(&file_entry.path);
                 let values: [(u32, &dyn ToValue); COLUMNS_NUMBER] = [
                     (ColumnsBigFiles::SelectionButton as u32, &false),
-                    (ColumnsBigFiles::Size as u32, &(format_size(*size, BINARY))),
+                    (ColumnsBigFiles::Size as u32, &(format_size(file_entry.size, BINARY))),
                     (ColumnsBigFiles::Name as u32, &file),
                     (ColumnsBigFiles::Path as u32, &directory),
                     (
@@ -969,7 +978,7 @@ fn computer_big_files(
                         &(NaiveDateTime::from_timestamp_opt(file_entry.modified_date as i64, 0).unwrap().to_string()),
                     ),
                     (ColumnsBigFiles::ModificationAsSecs as u32, &(file_entry.modified_date as i64)),
-                    (ColumnsBigFiles::SizeAsBytes as u32, &(size)),
+                    (ColumnsBigFiles::SizeAsBytes as u32, &(file_entry.size)),
                 ];
                 list_store.set(&list_store.append(), &values);
             }
@@ -991,6 +1000,7 @@ fn computer_big_files(
     }
 }
 
+#[fun_time(message = "computer_empty_files", level = "debug")]
 fn computer_empty_files(
     vf: EmptyFiles,
     entry_info: &Entry,
@@ -1057,6 +1067,7 @@ fn computer_empty_files(
     }
 }
 
+#[fun_time(message = "computer_empty_folders", level = "debug")]
 fn computer_empty_folders(
     ef: EmptyFolder,
     entry_info: &Entry,
@@ -1128,6 +1139,7 @@ fn computer_empty_folders(
     }
 }
 
+#[fun_time(message = "computer_duplicate_finder", level = "debug")]
 fn computer_duplicate_finder(
     df: DuplicateFinder,
     entry_info: &Entry,
@@ -1463,7 +1475,7 @@ fn similar_videos_add_to_list_store(list_store: &ListStore, file: &str, director
         (ColumnsSimilarVideos::Modification as u32, &string_date),
         (ColumnsSimilarVideos::ModificationAsSecs as u32, &modified_date),
         (ColumnsSimilarVideos::Color as u32, &color),
-        (ColumnsSimilarVideos::IsHeader as u32, &false),
+        (ColumnsSimilarVideos::IsHeader as u32, &is_header),
         (ColumnsSimilarVideos::TextColor as u32, &TEXT_COLOR),
     ];
 

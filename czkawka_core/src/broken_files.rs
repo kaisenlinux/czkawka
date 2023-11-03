@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 use std::fs::{DirEntry, File, Metadata};
 use std::io::prelude::*;
-use std::io::{BufReader, BufWriter};
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
 use std::{fs, mem, panic};
 
 use crossbeam_channel::Receiver;
+use fun_time::fun_time;
 use futures::channel::mpsc::UnboundedSender;
+use log::debug;
 use pdf::file::FileOptions;
 use pdf::object::ParseOptions;
 use pdf::PdfError;
@@ -18,21 +19,13 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::common::{
-    check_folder_children, create_crash_message, open_cache_folder, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads, PDF_FILES_EXTENSIONS,
+    check_folder_children, check_if_stop_received, create_crash_message, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads, AUDIO_FILES_EXTENSIONS,
+    IMAGE_RS_BROKEN_FILES_EXTENSIONS, PDF_FILES_EXTENSIONS, ZIP_FILES_EXTENSIONS,
 };
-use crate::common::{AUDIO_FILES_EXTENSIONS, IMAGE_RS_BROKEN_FILES_EXTENSIONS, ZIP_FILES_EXTENSIONS};
+use crate::common_cache::{get_broken_files_cache_file, load_cache_from_file_generalized_by_path, save_cache_to_file_generalized};
 use crate::common_dir_traversal::{common_get_entry_data_metadata, common_read_dir, get_lowercase_name, get_modified_time, CheckingMethod, ProgressData, ToolType};
-use crate::common_directory::Directories;
-use crate::common_extensions::Extensions;
-use crate::common_items::ExcludedItems;
-use crate::common_messages::Messages;
+use crate::common_tool::{CommonData, CommonToolData, DeleteMethod};
 use crate::common_traits::*;
-
-#[derive(Eq, PartialEq, Clone, Debug, Copy)]
-pub enum DeleteMethod {
-    None,
-    Delete,
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -41,6 +34,17 @@ pub struct FileEntry {
     pub size: u64,
     pub type_of_file: TypeOfFile,
     pub error_string: String,
+}
+impl ResultEntry for FileEntry {
+    fn get_path(&self) -> &Path {
+        &self.path
+    }
+    fn get_modified_date(&self) -> u64 {
+        self.modified_date
+    }
+    fn get_size(&self) -> u64 {
+        self.size
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -64,149 +68,60 @@ bitflags! {
     }
 }
 
-/// Info struck with helpful information's about results
 #[derive(Default)]
 pub struct Info {
     pub number_of_broken_files: usize,
 }
 
-impl Info {
-    #[must_use]
-    pub fn new() -> Self {
-        Default::default()
-    }
-}
-
 pub struct BrokenFiles {
-    tool_type: ToolType,
-    text_messages: Messages,
+    common_data: CommonToolData,
     information: Info,
     files_to_check: BTreeMap<String, FileEntry>,
     broken_files: Vec<FileEntry>,
-    directories: Directories,
-    allowed_extensions: Extensions,
-    excluded_items: ExcludedItems,
-    recursive_search: bool,
-    delete_method: DeleteMethod,
-    stopped_search: bool,
     checked_types: CheckedTypes,
-    use_cache: bool,
-    // TODO add this to GUI
-    delete_outdated_cache: bool,
-    save_also_as_json: bool,
 }
 
 impl BrokenFiles {
-    #[must_use]
     pub fn new() -> Self {
         Self {
-            tool_type: ToolType::BrokenFiles,
-            text_messages: Messages::new(),
-            information: Info::new(),
-            recursive_search: true,
-            allowed_extensions: Extensions::new(),
-            directories: Directories::new(),
-            excluded_items: ExcludedItems::new(),
+            common_data: CommonToolData::new(ToolType::BrokenFiles),
+            information: Info::default(),
             files_to_check: Default::default(),
-            delete_method: DeleteMethod::None,
-            stopped_search: false,
             broken_files: Default::default(),
-            use_cache: true,
-            delete_outdated_cache: true,
-            save_also_as_json: false,
             checked_types: CheckedTypes::PDF | CheckedTypes::AUDIO | CheckedTypes::IMAGE | CheckedTypes::ARCHIVE,
         }
     }
 
+    #[fun_time(message = "find_broken_files", level = "info")]
     pub fn find_broken_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) {
-        self.directories.optimize_directories(self.recursive_search, &mut self.text_messages);
+        self.optimize_dirs_before_start();
         if !self.check_files(stop_receiver, progress_sender) {
-            self.stopped_search = true;
+            self.common_data.stopped_search = true;
             return;
         }
         if !self.look_for_broken_files(stop_receiver, progress_sender) {
-            self.stopped_search = true;
+            self.common_data.stopped_search = true;
             return;
         }
         self.delete_files();
         self.debug_print();
     }
 
-    #[must_use]
-    pub fn get_stopped_search(&self) -> bool {
-        self.stopped_search
-    }
-
-    #[must_use]
-    pub const fn get_broken_files(&self) -> &Vec<FileEntry> {
-        &self.broken_files
-    }
-
-    pub fn set_checked_types(&mut self, checked_types: CheckedTypes) {
-        self.checked_types = checked_types;
-    }
-
-    #[must_use]
-    pub const fn get_text_messages(&self) -> &Messages {
-        &self.text_messages
-    }
-
-    #[must_use]
-    pub const fn get_information(&self) -> &Info {
-        &self.information
-    }
-
-    pub fn set_delete_method(&mut self, delete_method: DeleteMethod) {
-        self.delete_method = delete_method;
-    }
-
-    pub fn set_save_also_as_json(&mut self, save_also_as_json: bool) {
-        self.save_also_as_json = save_also_as_json;
-    }
-
-    pub fn set_use_cache(&mut self, use_cache: bool) {
-        self.use_cache = use_cache;
-    }
-
-    pub fn set_recursive_search(&mut self, recursive_search: bool) {
-        self.recursive_search = recursive_search;
-    }
-
-    #[cfg(target_family = "unix")]
-    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
-        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
-    }
-    #[cfg(not(target_family = "unix"))]
-    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
-
-    pub fn set_included_directory(&mut self, included_directory: Vec<PathBuf>) -> bool {
-        self.directories.set_included_directory(included_directory, &mut self.text_messages)
-    }
-
-    pub fn set_excluded_directory(&mut self, excluded_directory: Vec<PathBuf>) {
-        self.directories.set_excluded_directory(excluded_directory, &mut self.text_messages);
-    }
-    pub fn set_allowed_extensions(&mut self, allowed_extensions: String) {
-        self.allowed_extensions.set_allowed_extensions(allowed_extensions, &mut self.text_messages);
-    }
-
-    pub fn set_excluded_items(&mut self, excluded_items: Vec<String>) {
-        self.excluded_items.set_excluded_items(excluded_items, &mut self.text_messages);
-    }
-
+    #[fun_time(message = "check_files", level = "debug")]
     fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
         let mut folders_to_check: Vec<PathBuf> = Vec::with_capacity(1024 * 2); // This should be small enough too not see to big difference and big enough to store most of paths without needing to resize vector
 
         // Add root folders for finding
-        for id in &self.directories.included_directories {
+        for id in &self.common_data.directories.included_directories {
             folders_to_check.push(id.clone());
         }
 
         let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, 0, 1, 0, CheckingMethod::None, self.tool_type);
+            prepare_thread_handler_common(progress_sender, 0, 1, 0, CheckingMethod::None, self.common_data.tool_type);
 
+        debug!("check_files - starting to collect files");
         while !folders_to_check.is_empty() {
-            if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+            if check_if_stop_received(stop_receiver) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
                 return false;
             }
@@ -234,9 +149,9 @@ impl BrokenFiles {
                                 &mut warnings,
                                 current_folder,
                                 entry_data,
-                                self.recursive_search,
-                                &self.directories,
-                                &self.excluded_items,
+                                self.common_data.recursive_search,
+                                &self.common_data.directories,
+                                &self.common_data.excluded_items,
                             );
                         } else if metadata.is_file() {
                             if let Some(file_entry) = self.get_file_entry(&metadata, &atomic_counter, entry_data, &mut warnings, current_folder) {
@@ -247,6 +162,7 @@ impl BrokenFiles {
                     (dir_result, warnings, fe_result)
                 })
                 .collect();
+            debug!("check_files - collected files");
 
             // Advance the frontier
             folders_to_check.clear();
@@ -254,7 +170,7 @@ impl BrokenFiles {
             // Process collected data
             for (segment, warnings, fe_result) in segments {
                 folders_to_check.extend(segment);
-                self.text_messages.warnings.extend(warnings);
+                self.common_data.text_messages.warnings.extend(warnings);
                 for (name, fe) in fe_result {
                     self.files_to_check.insert(name, fe);
                 }
@@ -262,9 +178,9 @@ impl BrokenFiles {
         }
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-
         true
     }
+
     fn get_file_entry(
         &self,
         metadata: &Metadata,
@@ -279,21 +195,18 @@ impl BrokenFiles {
             return None;
         };
 
-        if !self.allowed_extensions.matches_filename(&file_name_lowercase) {
+        if !self.common_data.allowed_extensions.matches_filename(&file_name_lowercase) {
             return None;
         }
 
         let type_of_file = check_extension_availability(&file_name_lowercase);
-        if type_of_file == TypeOfFile::Unknown {
-            return None;
-        }
 
-        if !check_extension_allowed(&type_of_file, &self.checked_types) {
+        if !check_if_file_extension_is_allowed(&type_of_file, &self.checked_types) {
             return None;
         }
 
         let current_file_name = current_folder.join(entry_data.file_name());
-        if self.excluded_items.is_excluded(&current_file_name) {
+        if self.common_data.excluded_items.is_excluded(&current_file_name) {
             return None;
         }
 
@@ -406,49 +319,46 @@ impl BrokenFiles {
         }
     }
 
-    fn look_for_broken_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
+    #[fun_time(message = "load_cache", level = "debug")]
+    fn load_cache(&mut self) -> (BTreeMap<String, FileEntry>, BTreeMap<String, FileEntry>, BTreeMap<String, FileEntry>) {
         let loaded_hash_map;
 
         let mut records_already_cached: BTreeMap<String, FileEntry> = Default::default();
         let mut non_cached_files_to_check: BTreeMap<String, FileEntry> = Default::default();
         let files_to_check = mem::take(&mut self.files_to_check);
 
-        if self.use_cache {
-            loaded_hash_map = match load_cache_from_file(&mut self.text_messages, self.delete_outdated_cache) {
-                Some(t) => t,
-                None => Default::default(),
-            };
+        if self.common_data.use_cache {
+            let (messages, loaded_items) = load_cache_from_file_generalized_by_path::<FileEntry>(&get_broken_files_cache_file(), self.get_delete_outdated_cache(), &files_to_check);
+            self.get_text_messages_mut().extend_with_another_messages(messages);
+            loaded_hash_map = loaded_items.unwrap_or_default();
 
             for (name, file_entry) in files_to_check {
-                let checked_extension = check_extension_allowed(&file_entry.type_of_file, &self.checked_types); // Only broken
-
-                #[allow(clippy::if_same_then_else)]
-                if checked_extension && !loaded_hash_map.contains_key(&name) {
-                    // If loaded data doesn't contains current info
-                    non_cached_files_to_check.insert(name, file_entry.clone());
-                } else if checked_extension && file_entry.size != loaded_hash_map.get(&name).unwrap().size
-                    || file_entry.modified_date != loaded_hash_map.get(&name).unwrap().modified_date
-                {
-                    // When size or modification date of image changed, then it is clear that is different image
-                    non_cached_files_to_check.insert(name, file_entry);
+                if let Some(cached_file_entry) = loaded_hash_map.get(&name) {
+                    records_already_cached.insert(name.clone(), cached_file_entry.clone());
                 } else {
-                    // Checking may be omitted when already there is entry with same size and modification date
-                    records_already_cached.insert(name.clone(), loaded_hash_map.get(&name).unwrap().clone());
+                    non_cached_files_to_check.insert(name, file_entry);
                 }
             }
         } else {
             loaded_hash_map = Default::default();
             non_cached_files_to_check = files_to_check;
         }
+        (loaded_hash_map, records_already_cached, non_cached_files_to_check)
+    }
+
+    #[fun_time(message = "look_for_broken_files", level = "debug")]
+    fn look_for_broken_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
+        let (loaded_hash_map, records_already_cached, non_cached_files_to_check) = self.load_cache();
 
         let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, 1, 1, non_cached_files_to_check.len(), CheckingMethod::None, self.tool_type);
+            prepare_thread_handler_common(progress_sender, 1, 1, non_cached_files_to_check.len(), CheckingMethod::None, self.common_data.tool_type);
 
+        debug!("look_for_broken_files - started finding for broken files");
         let mut vec_file_entry: Vec<FileEntry> = non_cached_files_to_check
             .into_par_iter()
             .map(|(_, file_entry)| {
                 atomic_counter.fetch_add(1, Ordering::Relaxed);
-                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+                if check_if_stop_received(stop_receiver) {
                     return None;
                 }
 
@@ -465,24 +375,14 @@ impl BrokenFiles {
             .filter(Option::is_some)
             .map(Option::unwrap)
             .collect::<Vec<FileEntry>>();
+        debug!("look_for_broken_files - ended finding for broken files");
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
 
         // Just connect loaded results with already calculated
         vec_file_entry.extend(records_already_cached.into_values());
 
-        if self.use_cache {
-            // Must save all results to file, old loaded from file with all currently counted results
-            let mut all_results: BTreeMap<String, FileEntry> = Default::default();
-
-            for file_entry in vec_file_entry.clone() {
-                all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
-            }
-            for (_name, file_entry) in loaded_hash_map {
-                all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
-            }
-            save_cache_to_file(&all_results, &mut self.text_messages, self.save_also_as_json);
-        }
+        self.save_to_cache(&vec_file_entry, loaded_hash_map);
 
         self.broken_files = vec_file_entry
             .into_par_iter()
@@ -490,30 +390,63 @@ impl BrokenFiles {
             .collect();
 
         self.information.number_of_broken_files = self.broken_files.len();
-
+        debug!("Found {} broken files.", self.information.number_of_broken_files);
         // Clean unused data
         self.files_to_check = Default::default();
 
         true
     }
+    #[fun_time(message = "save_to_cache", level = "debug")]
+    fn save_to_cache(&mut self, vec_file_entry: &[FileEntry], loaded_hash_map: BTreeMap<String, FileEntry>) {
+        if self.common_data.use_cache {
+            // Must save all results to file, old loaded from file with all currently counted results
+            let mut all_results: BTreeMap<String, FileEntry> = Default::default();
 
-    /// Function to delete files, from filed Vector
+            for file_entry in vec_file_entry.iter().cloned() {
+                all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
+            }
+            for (_name, file_entry) in loaded_hash_map {
+                all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
+            }
+
+            let messages = save_cache_to_file_generalized(&get_broken_files_cache_file(), &all_results, self.common_data.save_also_as_json, 0);
+            self.get_text_messages_mut().extend_with_another_messages(messages);
+        }
+    }
+
+    #[fun_time(message = "delete_files", level = "debug")]
     fn delete_files(&mut self) {
-        match self.delete_method {
+        match self.common_data.delete_method {
             DeleteMethod::Delete => {
                 for file_entry in &self.broken_files {
                     if fs::remove_file(&file_entry.path).is_err() {
-                        self.text_messages.warnings.push(file_entry.path.display().to_string());
+                        self.common_data.text_messages.warnings.push(file_entry.path.display().to_string());
                     }
                 }
             }
             DeleteMethod::None => {
                 //Just do nothing
             }
+            _ => {
+                unreachable!()
+            }
         }
     }
 }
 
+impl BrokenFiles {
+    pub const fn get_broken_files(&self) -> &Vec<FileEntry> {
+        &self.broken_files
+    }
+
+    pub fn set_checked_types(&mut self, checked_types: CheckedTypes) {
+        self.checked_types = checked_types;
+    }
+
+    pub const fn get_information(&self) -> &Info {
+        &self.information
+    }
+}
 impl Default for BrokenFiles {
     fn default() -> Self {
         Self::new()
@@ -521,159 +454,37 @@ impl Default for BrokenFiles {
 }
 
 impl DebugPrint for BrokenFiles {
-    #[allow(dead_code)]
-    #[allow(unreachable_code)]
-    /// Debugging printing - only available on debug build
     fn debug_print(&self) {
-        #[cfg(not(debug_assertions))]
-        {
+        if !cfg!(debug_assertions) {
             return;
         }
-        println!("---------------DEBUG PRINT---------------");
-        println!("### Information's");
-
-        println!("Errors size - {}", self.text_messages.errors.len());
-        println!("Warnings size - {}", self.text_messages.warnings.len());
-        println!("Messages size - {}", self.text_messages.messages.len());
-
-        println!("### Other");
-
-        println!("Excluded items - {:?}", self.excluded_items.items);
-        println!("Included directories - {:?}", self.directories.included_directories);
-        println!("Excluded directories - {:?}", self.directories.excluded_directories);
-        println!("Recursive search - {}", self.recursive_search);
-        #[cfg(target_family = "unix")]
-        println!("Skip other filesystems - {}", self.directories.exclude_other_filesystems());
-        println!("Delete Method - {:?}", self.delete_method);
-        println!("-----------------------------------------");
-    }
-}
-
-impl SaveResults for BrokenFiles {
-    fn save_results_to_file(&mut self, file_name: &str) -> bool {
-        let file_name: String = match file_name {
-            "" => "results.txt".to_string(),
-            k => k.to_string(),
-        };
-
-        let file_handler = match File::create(&file_name) {
-            Ok(t) => t,
-            Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
-                return false;
-            }
-        };
-        let mut writer = BufWriter::new(file_handler);
-
-        if let Err(e) = writeln!(
-            writer,
-            "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
-            self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
-        ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
-            return false;
-        }
-
-        if !self.broken_files.is_empty() {
-            writeln!(writer, "Found {} broken files.", self.information.number_of_broken_files).unwrap();
-            for file_entry in &self.broken_files {
-                writeln!(writer, "{} - {}", file_entry.path.display(), file_entry.error_string).unwrap();
-            }
-        } else {
-            write!(writer, "Not found any broken files.").unwrap();
-        }
-
-        true
+        self.debug_print_common();
     }
 }
 
 impl PrintResults for BrokenFiles {
-    /// Print information's about duplicated entries
-    /// Only needed for CLI
-    fn print_results(&self) {
-        println!("Found {} broken files.\n", self.information.number_of_broken_files);
-        for file_entry in &self.broken_files {
-            println!("{} - {}", file_entry.path.display(), file_entry.error_string);
-        }
-    }
-}
+    fn write_results<T: Write>(&self, writer: &mut T) -> std::io::Result<()> {
+        writeln!(
+            writer,
+            "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
+            self.common_data.directories.included_directories, self.common_data.directories.excluded_directories, self.common_data.excluded_items.items
+        )?;
 
-fn save_cache_to_file(old_hashmap: &BTreeMap<String, FileEntry>, text_messages: &mut Messages, save_also_as_json: bool) {
-    let mut hashmap: BTreeMap<String, FileEntry> = Default::default();
-    for (path, fe) in old_hashmap {
-        if fe.size > 1024 {
-            hashmap.insert(path.clone(), fe.clone());
-        }
-    }
-    let hashmap = &hashmap;
-
-    if let Some(((file_handler, cache_file), (file_handler_json, cache_file_json))) = open_cache_folder(&get_cache_file(), true, save_also_as_json, &mut text_messages.warnings) {
-        {
-            let writer = BufWriter::new(file_handler.unwrap()); // Unwrap because cannot fail here
-            if let Err(e) = bincode::serialize_into(writer, hashmap) {
-                text_messages
-                    .warnings
-                    .push(format!("Cannot write data to cache file {}, reason {}", cache_file.display(), e));
-                return;
+        if !self.broken_files.is_empty() {
+            writeln!(writer, "Found {} broken files.", self.information.number_of_broken_files)?;
+            for file_entry in &self.broken_files {
+                writeln!(writer, "{} - {}", file_entry.path.display(), file_entry.error_string)?;
             }
-        }
-        if save_also_as_json {
-            if let Some(file_handler_json) = file_handler_json {
-                let writer = BufWriter::new(file_handler_json);
-                if let Err(e) = serde_json::to_writer(writer, hashmap) {
-                    text_messages
-                        .warnings
-                        .push(format!("Cannot write data to cache file {}, reason {}", cache_file_json.display(), e));
-                    return;
-                }
-            }
-        }
-
-        text_messages.messages.push(format!("Properly saved to file {} cache entries.", hashmap.len()));
-    }
-}
-
-fn load_cache_from_file(text_messages: &mut Messages, delete_outdated_cache: bool) -> Option<BTreeMap<String, FileEntry>> {
-    if let Some(((file_handler, cache_file), (file_handler_json, cache_file_json))) = open_cache_folder(&get_cache_file(), false, true, &mut text_messages.warnings) {
-        let mut hashmap_loaded_entries: BTreeMap<String, FileEntry>;
-        if let Some(file_handler) = file_handler {
-            let reader = BufReader::new(file_handler);
-            hashmap_loaded_entries = match bincode::deserialize_from(reader) {
-                Ok(t) => t,
-                Err(e) => {
-                    text_messages
-                        .warnings
-                        .push(format!("Failed to load data from cache file {}, reason {}", cache_file.display(), e));
-                    return None;
-                }
-            };
         } else {
-            let reader = BufReader::new(file_handler_json.unwrap()); // Unwrap cannot fail, because at least one file must be valid
-            hashmap_loaded_entries = match serde_json::from_reader(reader) {
-                Ok(t) => t,
-                Err(e) => {
-                    text_messages
-                        .warnings
-                        .push(format!("Failed to load data from cache file {}, reason {}", cache_file_json.display(), e));
-                    return None;
-                }
-            };
+            write!(writer, "Not found any broken files.")?;
         }
 
-        // Don't load cache data if destination file not exists
-        if delete_outdated_cache {
-            hashmap_loaded_entries.retain(|src_path, _file_entry| Path::new(src_path).exists());
-        }
-
-        text_messages.messages.push(format!("Properly loaded {} cache entries.", hashmap_loaded_entries.len()));
-
-        return Some(hashmap_loaded_entries);
+        Ok(())
     }
-    None
-}
 
-fn get_cache_file() -> String {
-    "cache_broken_files.bin".to_string()
+    fn save_results_to_file_as_json(&self, file_name: &str, pretty_print: bool) -> std::io::Result<()> {
+        self.save_results_to_file_as_json_internal(file_name, &self.broken_files, pretty_print)
+    }
 }
 
 fn check_extension_availability(file_name_lowercase: &str) -> TypeOfFile {
@@ -690,7 +501,7 @@ fn check_extension_availability(file_name_lowercase: &str) -> TypeOfFile {
     }
 }
 
-fn check_extension_allowed(type_of_file: &TypeOfFile, checked_types: &CheckedTypes) -> bool {
+fn check_if_file_extension_is_allowed(type_of_file: &TypeOfFile, checked_types: &CheckedTypes) -> bool {
     ((*type_of_file == TypeOfFile::Image) && ((*checked_types & CheckedTypes::IMAGE) == CheckedTypes::IMAGE))
         || ((*type_of_file == TypeOfFile::PDF) && ((*checked_types & CheckedTypes::PDF) == CheckedTypes::PDF))
         || ((*type_of_file == TypeOfFile::ArchiveZip) && ((*checked_types & CheckedTypes::ARCHIVE) == CheckedTypes::ARCHIVE))
@@ -723,4 +534,13 @@ fn validate_pdf_error(file_entry: &mut FileEntry, e: PdfError) -> PdfError {
 
     file_entry.error_string = error_string;
     unpack_pdf_error(e)
+}
+
+impl CommonData for BrokenFiles {
+    fn get_cd(&self) -> &CommonToolData {
+        &self.common_data
+    }
+    fn get_cd_mut(&mut self) -> &mut CommonToolData {
+        &mut self.common_data
+    }
 }

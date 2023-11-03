@@ -1,151 +1,67 @@
 use std::fs;
-use std::fs::File;
+
 use std::io::prelude::*;
-use std::io::BufWriter;
-use std::path::PathBuf;
 
 use crossbeam_channel::Receiver;
+use fun_time::fun_time;
 use futures::channel::mpsc::UnboundedSender;
+use log::debug;
 
 use crate::common_dir_traversal::{Collect, DirTraversalBuilder, DirTraversalResult, ErrorType, FileEntry, ProgressData, ToolType};
-use crate::common_directory::Directories;
-use crate::common_extensions::Extensions;
-use crate::common_items::ExcludedItems;
-use crate::common_messages::Messages;
+use crate::common_tool::{CommonData, CommonToolData, DeleteMethod};
 use crate::common_traits::*;
 
-#[derive(Eq, PartialEq, Clone, Debug, Copy)]
-pub enum DeleteMethod {
-    None,
-    Delete,
-}
-
-/// Info struck with helpful information's about results
 #[derive(Default)]
 pub struct Info {
     pub number_of_invalid_symlinks: usize,
 }
 
-impl Info {
-    #[must_use]
-    pub fn new() -> Self {
-        Default::default()
-    }
-}
-
-/// Struct with required information's to work
 pub struct InvalidSymlinks {
-    #[allow(dead_code)]
-    tool_type: ToolType,
-    text_messages: Messages,
+    common_data: CommonToolData,
     information: Info,
     invalid_symlinks: Vec<FileEntry>,
-    directories: Directories,
-    allowed_extensions: Extensions,
-    excluded_items: ExcludedItems,
-    recursive_search: bool,
-    delete_method: DeleteMethod,
-    stopped_search: bool,
 }
-
 impl InvalidSymlinks {
-    #[must_use]
     pub fn new() -> Self {
         Self {
-            tool_type: ToolType::InvalidSymlinks,
-            text_messages: Messages::new(),
-            information: Info::new(),
-            recursive_search: true,
-            allowed_extensions: Extensions::new(),
-            directories: Directories::new(),
-            excluded_items: ExcludedItems::new(),
+            common_data: CommonToolData::new(ToolType::InvalidSymlinks),
+            information: Info::default(),
             invalid_symlinks: vec![],
-            delete_method: DeleteMethod::None,
-            stopped_search: false,
         }
     }
 
+    #[fun_time(message = "find_invalid_links", level = "info")]
     pub fn find_invalid_links(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) {
-        self.directories.optimize_directories(self.recursive_search, &mut self.text_messages);
+        self.optimize_dirs_before_start();
         if !self.check_files(stop_receiver, progress_sender) {
-            self.stopped_search = true;
+            self.common_data.stopped_search = true;
             return;
         }
         self.delete_files();
         self.debug_print();
     }
 
-    #[must_use]
-    pub fn get_stopped_search(&self) -> bool {
-        self.stopped_search
-    }
-
-    #[must_use]
-    pub const fn get_invalid_symlinks(&self) -> &Vec<FileEntry> {
-        &self.invalid_symlinks
-    }
-
-    #[must_use]
-    pub const fn get_text_messages(&self) -> &Messages {
-        &self.text_messages
-    }
-
-    #[must_use]
-    pub const fn get_information(&self) -> &Info {
-        &self.information
-    }
-
-    pub fn set_delete_method(&mut self, delete_method: DeleteMethod) {
-        self.delete_method = delete_method;
-    }
-
-    pub fn set_recursive_search(&mut self, recursive_search: bool) {
-        self.recursive_search = recursive_search;
-    }
-
-    #[cfg(target_family = "unix")]
-    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
-        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
-    }
-    #[cfg(not(target_family = "unix"))]
-    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
-
-    pub fn set_included_directory(&mut self, included_directory: Vec<PathBuf>) -> bool {
-        self.directories.set_included_directory(included_directory, &mut self.text_messages)
-    }
-
-    pub fn set_excluded_directory(&mut self, excluded_directory: Vec<PathBuf>) {
-        self.directories.set_excluded_directory(excluded_directory, &mut self.text_messages);
-    }
-    pub fn set_allowed_extensions(&mut self, allowed_extensions: String) {
-        self.allowed_extensions.set_allowed_extensions(allowed_extensions, &mut self.text_messages);
-    }
-
-    pub fn set_excluded_items(&mut self, excluded_items: Vec<String>) {
-        self.excluded_items.set_excluded_items(excluded_items, &mut self.text_messages);
-    }
-
-    /// Check files for any with size == 0
+    #[fun_time(message = "check_files", level = "debug")]
     fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
         let result = DirTraversalBuilder::new()
-            .root_dirs(self.directories.included_directories.clone())
+            .root_dirs(self.common_data.directories.included_directories.clone())
             .group_by(|_fe| ())
             .stop_receiver(stop_receiver)
             .progress_sender(progress_sender)
             .collect(Collect::InvalidSymlinks)
-            .directories(self.directories.clone())
-            .allowed_extensions(self.allowed_extensions.clone())
-            .excluded_items(self.excluded_items.clone())
-            .recursive_search(self.recursive_search)
+            .directories(self.common_data.directories.clone())
+            .allowed_extensions(self.common_data.allowed_extensions.clone())
+            .excluded_items(self.common_data.excluded_items.clone())
+            .recursive_search(self.common_data.recursive_search)
             .build()
             .run();
+
         match result {
             DirTraversalResult::SuccessFiles { grouped_file_entries, warnings } => {
-                if let Some(((), invalid_symlinks)) = grouped_file_entries.into_iter().next() {
-                    self.invalid_symlinks = invalid_symlinks;
-                }
+                self.invalid_symlinks = grouped_file_entries.into_values().flatten().collect();
                 self.information.number_of_invalid_symlinks = self.invalid_symlinks.len();
-                self.text_messages.warnings.extend(warnings);
+                self.common_data.text_messages.warnings.extend(warnings);
+                debug!("Found {} invalid symlinks.", self.information.number_of_invalid_symlinks);
                 true
             }
             DirTraversalResult::SuccessFolders { .. } => unreachable!(),
@@ -153,19 +69,20 @@ impl InvalidSymlinks {
         }
     }
 
-    /// Function to delete files, from filed Vector
+    #[fun_time(message = "delete_files", level = "debug")]
     fn delete_files(&mut self) {
-        match self.delete_method {
+        match self.common_data.delete_method {
             DeleteMethod::Delete => {
                 for file_entry in &self.invalid_symlinks {
                     if fs::remove_file(file_entry.path.clone()).is_err() {
-                        self.text_messages.warnings.push(file_entry.path.display().to_string());
+                        self.common_data.text_messages.warnings.push(file_entry.path.display().to_string());
                     }
                 }
             }
             DeleteMethod::None => {
                 //Just do nothing
             }
+            _ => unreachable!(),
         }
     }
 }
@@ -177,62 +94,21 @@ impl Default for InvalidSymlinks {
 }
 
 impl DebugPrint for InvalidSymlinks {
-    #[allow(dead_code)]
-    #[allow(unreachable_code)]
-    /// Debugging printing - only available on debug build
     fn debug_print(&self) {
-        #[cfg(not(debug_assertions))]
-        {
+        if !cfg!(debug_assertions) {
             return;
         }
         println!("---------------DEBUG PRINT---------------");
-        println!("### Information's");
-
-        println!("Errors size - {}", self.text_messages.errors.len());
-        println!("Warnings size - {}", self.text_messages.warnings.len());
-        println!("Messages size - {}", self.text_messages.messages.len());
-
-        println!("### Other");
-
         println!("Invalid symlinks list size - {}", self.invalid_symlinks.len());
-        println!("Excluded items - {:?}", self.excluded_items.items);
-        println!("Included directories - {:?}", self.directories.included_directories);
-        println!("Excluded directories - {:?}", self.directories.excluded_directories);
-        println!("Recursive search - {}", self.recursive_search);
-        #[cfg(target_family = "unix")]
-        println!("Skip other filesystems - {}", self.directories.exclude_other_filesystems());
-        println!("Delete Method - {:?}", self.delete_method);
+        self.debug_print_common();
         println!("-----------------------------------------");
     }
 }
 
-impl SaveResults for InvalidSymlinks {
-    fn save_results_to_file(&mut self, file_name: &str) -> bool {
-        let file_name: String = match file_name {
-            "" => "results.txt".to_string(),
-            k => k.to_string(),
-        };
-
-        let file_handler = match File::create(&file_name) {
-            Ok(t) => t,
-            Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
-                return false;
-            }
-        };
-        let mut writer = BufWriter::new(file_handler);
-
-        if let Err(e) = writeln!(
-            writer,
-            "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
-            self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
-        ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
-            return false;
-        }
-
+impl PrintResults for InvalidSymlinks {
+    fn write_results<T: Write>(&self, writer: &mut T) -> std::io::Result<()> {
         if !self.invalid_symlinks.is_empty() {
-            writeln!(writer, "Found {} invalid symlinks.", self.information.number_of_invalid_symlinks).unwrap();
+            writeln!(writer, "Found {} invalid symlinks.", self.information.number_of_invalid_symlinks)?;
             for file_entry in &self.invalid_symlinks {
                 writeln!(
                     writer,
@@ -243,31 +119,35 @@ impl SaveResults for InvalidSymlinks {
                         ErrorType::InfiniteRecursion => "Infinite Recursion",
                         ErrorType::NonExistentFile => "Non Existent File",
                     }
-                )
-                .unwrap();
+                )?;
             }
         } else {
-            write!(writer, "Not found any invalid symlinks.").unwrap();
+            write!(writer, "Not found any invalid symlinks.")?;
         }
-        true
+
+        Ok(())
+    }
+
+    fn save_results_to_file_as_json(&self, file_name: &str, pretty_print: bool) -> std::io::Result<()> {
+        self.save_results_to_file_as_json_internal(file_name, &self.invalid_symlinks, pretty_print)
     }
 }
 
-impl PrintResults for InvalidSymlinks {
-    /// Print information's about duplicated entries
-    /// Only needed for CLI
-    fn print_results(&self) {
-        println!("Found {} invalid symlinks.\n", self.information.number_of_invalid_symlinks);
-        for file_entry in &self.invalid_symlinks {
-            println!(
-                "{}\t\t{}\t\t{}",
-                file_entry.path.display(),
-                file_entry.symlink_info.clone().expect("invalid traversal result").destination_path.display(),
-                match file_entry.symlink_info.clone().expect("invalid traversal result").type_of_error {
-                    ErrorType::InfiniteRecursion => "Infinite Recursion",
-                    ErrorType::NonExistentFile => "Non Existent File",
-                }
-            );
-        }
+impl CommonData for InvalidSymlinks {
+    fn get_cd(&self) -> &CommonToolData {
+        &self.common_data
+    }
+    fn get_cd_mut(&mut self) -> &mut CommonToolData {
+        &mut self.common_data
+    }
+}
+
+impl InvalidSymlinks {
+    pub const fn get_invalid_symlinks(&self) -> &Vec<FileEntry> {
+        &self.invalid_symlinks
+    }
+
+    pub const fn get_information(&self) -> &Info {
+        &self.information
     }
 }

@@ -382,7 +382,7 @@ settings_multiple_clear_cache_button_tooltip =
         Manually clear the cache of outdated entries.
         This should only be used if automatic clearing has been disabled.
 
-settings_multiple_clear_cache_button = Remove outdated results from images cache
+settings_multiple_clear_cache_button = Remove outdated results from cache.
 
 ## Duplicates
 settings_duplicates_hide_hard_link_button_tooltip = 
@@ -471,6 +471,12 @@ progress_scanning_size_name = Scanning name and size of {$file_number} file
 progress_scanning_name = Scanning name of {$file_number} file
 progress_analyzed_partial_hash = Analyzed partial hash of {$file_checked}/{$all_files} files
 progress_analyzed_full_hash = Analyzed full hash of {$file_checked}/{$all_files} files
+progress_prehash_cache_loading = Loading prehash cache
+progress_prehash_cache_saving = Saving prehash cache
+progress_hash_cache_loading = Loading hash cache
+progress_hash_cache_saving = Saving hash cache
+progress_cache_loading = Loading cache
+progress_cache_saving = Saving cache
 
 progress_current_stage = Current Stage:{"  "}
 progress_all_stages = All Stages:{"  "}
@@ -538,7 +544,7 @@ move_files_title_dialog = Choose folder to which you want to move duplicated fil
 move_files_choose_more_than_1_path = Only one path may be selected to be able to copy their duplicated files, selected {$path_number}.
 move_stats = Properly moved {$num_files}/{$all_files} items
 
-save_results_to_file = Saved results to file {$name}
+save_results_to_file = Saved results both to txt and json files.
 
 search_not_choosing_any_music = ERROR: You must select at least one checkbox with music searching types.
 search_not_choosing_any_broken_files = ERROR: You must select at least one checkbox with type of checked broken files.

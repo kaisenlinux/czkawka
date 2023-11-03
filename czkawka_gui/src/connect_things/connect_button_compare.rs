@@ -104,7 +104,7 @@ pub fn connect_button_compare(gui_data: &GuiData) {
         *shared_using_for_preview.borrow_mut() = (None, None);
         image_compare_left.set_from_pixbuf(None);
         image_compare_right.set_from_pixbuf(None);
-        gtk4::Inhibit(true)
+        glib::Propagation::Stop
     });
 
     let button_go_previous_compare_group = gui_data.compare_images.button_go_previous_compare_group.clone();
@@ -257,7 +257,6 @@ pub fn connect_button_compare(gui_data: &GuiData) {
     });
 }
 
-/// Populate all parameters for current group, it is used at start and when changing groups
 fn populate_groups_at_start(
     nb_object: &NotebookObject,
     model: &TreeModel,
@@ -345,7 +344,6 @@ fn populate_groups_at_start(
     check_button_right_preview_text.set_active(is_active);
 }
 
-/// Generate images which will be used later as preview images without needing to open them again and again
 fn generate_cache_for_results(vector_with_path: Vec<(String, String, TreePath)>) -> Vec<(String, String, Image, Image, TreePath)> {
     // TODO use here threads,
     // For now threads cannot be used because Image and TreeIter cannot be used in threads
@@ -414,7 +412,6 @@ fn generate_cache_for_results(vector_with_path: Vec<(String, String, TreePath)>)
     cache_all_images
 }
 
-/// Takes info about current items in groups like path
 fn get_all_path(model: &TreeModel, current_path: &TreePath, column_header: i32, column_path: i32, column_name: i32) -> Vec<(String, String, TreePath)> {
     let used_iter = model.iter(current_path).unwrap();
 
@@ -456,7 +453,6 @@ fn get_all_path(model: &TreeModel, current_path: &TreePath, column_header: i32, 
     returned_vector
 }
 
-/// Moves iterator to previous/next header
 fn move_iter(model: &TreeModel, tree_path: &TreePath, column_header: i32, go_next: bool) -> TreePath {
     let tree_iter = model.iter(tree_path).unwrap();
 
@@ -486,7 +482,6 @@ fn move_iter(model: &TreeModel, tree_path: &TreePath, column_header: i32, go_nex
     model.path(&tree_iter)
 }
 
-/// Populate bottom Scrolled View with small thumbnails
 fn populate_similar_scrolled_view(
     scrolled_window: &ScrolledWindow,
     image_cache: &[(String, String, Image, Image, TreePath)],
@@ -581,7 +576,6 @@ fn populate_similar_scrolled_view(
     scrolled_window.set_child(Some(&all_gtk_box));
 }
 
-/// Disables/Enables L/R buttons at the bottom scrolled view
 fn update_bottom_buttons(
     all_gtk_box: &gtk4::Box,
     shared_using_for_preview: &Rc<RefCell<(Option<TreePath>, Option<TreePath>)>>,

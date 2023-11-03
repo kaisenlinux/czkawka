@@ -11,6 +11,7 @@ use gtk4::{ComboBoxText, ScrolledWindow, TextView, TreeView};
 
 use czkawka_core::common::get_default_number_of_threads;
 use czkawka_core::common_dir_traversal::CheckingMethod;
+use czkawka_core::common_items::DEFAULT_EXCLUDED_ITEMS;
 use czkawka_core::similar_images::SIMILAR_VALUES;
 
 use crate::flg;
@@ -59,11 +60,6 @@ const DEFAULT_SIMILAR_VIDEOS_IGNORE_SAME_SIZE: bool = false;
 
 pub const DEFAULT_MINIMAL_FILE_SIZE: &str = "16384";
 pub const DEFAULT_MAXIMAL_FILE_SIZE: &str = "999999999999";
-
-#[cfg(target_family = "unix")]
-const DEFAULT_EXCLUDED_ITEMS: &str = "*/.git/*,*/node_modules/*,*/lost+found/*,*/Trash/*,*/.Trash-*/*,*/snap/*,/home/*/.cache/*";
-#[cfg(not(target_family = "unix"))]
-const DEFAULT_EXCLUDED_ITEMS: &str = "*\\.git\\*,*\\node_modules\\*,*\\lost+found\\*,*:\\windows\\*";
 
 #[cfg(target_family = "unix")]
 const DEFAULT_EXCLUDED_DIRECTORIES: &[&str] = &["/proc", "/dev", "/sys", "/run", "/snap"];
@@ -316,7 +312,7 @@ impl LoadSaveStruct {
                 if line.starts_with("--") {
                     header = line.to_string();
                 } else if !header.is_empty() {
-                    self.loaded_items.entry(header.clone()).or_insert_with(Vec::new).push(line.to_string());
+                    self.loaded_items.entry(header.clone()).or_default().push(line.to_string());
                 } else {
                     add_text_to_text_view(
                         text_view_errors,
@@ -985,7 +981,6 @@ fn set_directories(tree_view_included_directories: &TreeView, tree_view_excluded
     }
 }
 
-/// Function do not allow to set invalid index to combobox because this would cause to show empty value and function would crash
 fn save_proper_value_to_combo_box(combo_box: &ComboBoxText, what_to_save: u32) {
     combo_box.set_active(Some(what_to_save));
     if combo_box.active().is_none() {
@@ -993,7 +988,6 @@ fn save_proper_value_to_combo_box(combo_box: &ComboBoxText, what_to_save: u32) {
     }
 }
 
-/// Reset configuration to defaults
 pub fn reset_configuration(manual_clearing: bool, upper_notebook: &GuiUpperNotebook, main_notebook: &GuiMainNotebook, settings: &GuiSettings, text_view_errors: &TextView) {
     // TODO Maybe add popup dialog to confirm resetting
     let text_view_errors = text_view_errors.clone();
@@ -1032,7 +1026,7 @@ pub fn reset_configuration(manual_clearing: bool, upper_notebook: &GuiUpperNoteb
         let tree_view_excluded_directories = upper_notebook.tree_view_excluded_directories.clone();
         let list_store = get_list_store(&tree_view_excluded_directories);
         list_store.clear();
-        for i in DEFAULT_EXCLUDED_DIRECTORIES.iter() {
+        for i in DEFAULT_EXCLUDED_DIRECTORIES {
             let values: [(u32, &dyn ToValue); 1] = [(ColumnsExcludedDirectory::Path as u32, &i)];
             list_store.set(&list_store.append(), &values);
         }

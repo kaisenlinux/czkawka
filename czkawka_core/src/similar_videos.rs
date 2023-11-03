@@ -1,29 +1,27 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs::{DirEntry, File, Metadata};
+use std::fs::{DirEntry, Metadata};
 use std::io::Write;
-use std::io::*;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use crossbeam_channel::Receiver;
 use ffmpeg_cmdline_utils::FfmpegErrorKind::FfmpegNotFound;
+use fun_time::fun_time;
 use futures::channel::mpsc::UnboundedSender;
-use humansize::format_size;
-use humansize::BINARY;
+use humansize::{format_size, BINARY};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use vid_dup_finder_lib::HashCreationErrorKind::DetermineVideo;
 use vid_dup_finder_lib::{NormalizedTolerance, VideoHash};
 
-use crate::common::open_cache_folder;
-use crate::common::{check_folder_children, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads, VIDEO_FILES_EXTENSIONS};
+use crate::common::{
+    check_folder_children, check_if_stop_received, delete_files_custom, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads, VIDEO_FILES_EXTENSIONS,
+};
+use crate::common_cache::{get_similar_videos_cache_file, load_cache_from_file_generalized_by_path, save_cache_to_file_generalized};
 use crate::common_dir_traversal::{common_get_entry_data_metadata, common_read_dir, get_lowercase_name, get_modified_time, CheckingMethod, ProgressData, ToolType};
-use crate::common_directory::Directories;
-use crate::common_extensions::Extensions;
-use crate::common_items::ExcludedItems;
-use crate::common_messages::Messages;
-use crate::common_traits::{DebugPrint, PrintResults, ResultEntry, SaveResults};
+use crate::common_tool::{CommonData, CommonToolData, DeleteMethod};
+use crate::common_traits::{DebugPrint, PrintResults, ResultEntry};
 use crate::flc;
 use crate::localizer_core::generate_translation_hashmap;
 
@@ -37,13 +35,19 @@ pub struct FileEntry {
     pub vhash: VideoHash,
     pub error: String,
 }
+
 impl ResultEntry for FileEntry {
     fn get_path(&self) -> &Path {
         &self.path
     }
+    fn get_modified_date(&self) -> u64 {
+        self.modified_date
+    }
+    fn get_size(&self) -> u64 {
+        self.size
+    }
 }
 
-/// Distance metric to use with the BK-tree.
 struct Hamming;
 
 impl bk_tree::Metric<Vec<u8>> for Hamming {
@@ -58,216 +62,96 @@ impl bk_tree::Metric<Vec<u8>> for Hamming {
     }
 }
 
-/// Struct to store most basics info about all folder
 pub struct SimilarVideos {
-    tool_type: ToolType,
+    common_data: CommonToolData,
     information: Info,
-    text_messages: Messages,
-    directories: Directories,
-    excluded_items: ExcludedItems,
-    allowed_extensions: Extensions,
     similar_vectors: Vec<Vec<FileEntry>>,
     similar_referenced_vectors: Vec<(FileEntry, Vec<FileEntry>)>,
-    recursive_search: bool,
-    minimal_file_size: u64,
-    maximal_file_size: u64,
     videos_hashes: BTreeMap<Vec<u8>, Vec<FileEntry>>,
-    stopped_search: bool,
     videos_to_check: BTreeMap<String, FileEntry>,
-    use_cache: bool,
     tolerance: i32,
-    delete_outdated_cache: bool,
     exclude_videos_with_same_size: bool,
-    use_reference_folders: bool,
-    save_also_as_json: bool,
 }
 
-/// Info struck with helpful information's about results
+impl CommonData for SimilarVideos {
+    fn get_cd(&self) -> &CommonToolData {
+        &self.common_data
+    }
+    fn get_cd_mut(&mut self) -> &mut CommonToolData {
+        &mut self.common_data
+    }
+}
+
 #[derive(Default)]
 pub struct Info {
     pub number_of_duplicates: usize,
     pub number_of_groups: u64,
 }
 
-impl Info {
-    #[must_use]
-    pub fn new() -> Self {
-        Default::default()
-    }
-}
-
-/// Method implementation for `EmptyFolder`
 impl SimilarVideos {
-    /// New function providing basics values
-    #[must_use]
     pub fn new() -> Self {
         Self {
-            tool_type: ToolType::SimilarVideos,
+            common_data: CommonToolData::new(ToolType::SimilarVideos),
             information: Default::default(),
-            text_messages: Messages::new(),
-            directories: Directories::new(),
-            excluded_items: Default::default(),
-            allowed_extensions: Extensions::new(),
             similar_vectors: vec![],
-            recursive_search: true,
-            minimal_file_size: 1024 * 16,
-            maximal_file_size: u64::MAX,
             videos_hashes: Default::default(),
-            stopped_search: false,
             videos_to_check: Default::default(),
-            use_cache: true,
             tolerance: 10,
-            delete_outdated_cache: false,
             exclude_videos_with_same_size: false,
-            use_reference_folders: false,
             similar_referenced_vectors: vec![],
-            save_also_as_json: true,
         }
     }
 
-    pub fn set_exclude_videos_with_same_size(&mut self, exclude_videos_with_same_size: bool) {
-        self.exclude_videos_with_same_size = exclude_videos_with_same_size;
-    }
-
-    pub fn set_delete_outdated_cache(&mut self, delete_outdated_cache: bool) {
-        self.delete_outdated_cache = delete_outdated_cache;
-    }
-
-    pub fn set_tolerance(&mut self, tolerance: i32) {
-        assert!((0..=MAX_TOLERANCE).contains(&tolerance));
-        self.tolerance = tolerance;
-    }
-    pub fn set_save_also_as_json(&mut self, save_also_as_json: bool) {
-        self.save_also_as_json = save_also_as_json;
-    }
-
-    #[must_use]
-    pub fn get_stopped_search(&self) -> bool {
-        self.stopped_search
-    }
-
-    #[must_use]
-    pub const fn get_text_messages(&self) -> &Messages {
-        &self.text_messages
-    }
-
-    pub fn set_allowed_extensions(&mut self, allowed_extensions: String) {
-        self.allowed_extensions.set_allowed_extensions(allowed_extensions, &mut self.text_messages);
-    }
-
-    #[must_use]
-    pub const fn get_similar_videos(&self) -> &Vec<Vec<FileEntry>> {
-        &self.similar_vectors
-    }
-
-    #[must_use]
-    pub const fn get_information(&self) -> &Info {
-        &self.information
-    }
-
-    pub fn set_use_cache(&mut self, use_cache: bool) {
-        self.use_cache = use_cache;
-    }
-
-    pub fn set_recursive_search(&mut self, recursive_search: bool) {
-        self.recursive_search = recursive_search;
-    }
-
-    #[cfg(target_family = "unix")]
-    pub fn set_exclude_other_filesystems(&mut self, exclude_other_filesystems: bool) {
-        self.directories.set_exclude_other_filesystems(exclude_other_filesystems);
-    }
-    #[cfg(not(target_family = "unix"))]
-    pub fn set_exclude_other_filesystems(&mut self, _exclude_other_filesystems: bool) {}
-
-    pub fn set_minimal_file_size(&mut self, minimal_file_size: u64) {
-        self.minimal_file_size = match minimal_file_size {
-            0 => 1,
-            t => t,
-        };
-    }
-    pub fn set_maximal_file_size(&mut self, maximal_file_size: u64) {
-        self.maximal_file_size = match maximal_file_size {
-            0 => 1,
-            t => t,
-        };
-    }
-    #[must_use]
-    pub fn get_similar_videos_referenced(&self) -> &Vec<(FileEntry, Vec<FileEntry>)> {
-        &self.similar_referenced_vectors
-    }
-
-    #[must_use]
-    pub fn get_number_of_base_duplicated_files(&self) -> usize {
-        if self.use_reference_folders {
-            self.similar_referenced_vectors.len()
-        } else {
-            self.similar_vectors.len()
-        }
-    }
-
-    #[must_use]
-    pub fn get_use_reference(&self) -> bool {
-        self.use_reference_folders
-    }
-
-    /// Public function used by CLI to search for empty folders
+    #[fun_time(message = "find_similar_videos", level = "info")]
     pub fn find_similar_videos(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) {
         if !check_if_ffmpeg_is_installed() {
-            self.text_messages.errors.push(flc!("core_ffmpeg_not_found"));
+            self.common_data.text_messages.errors.push(flc!("core_ffmpeg_not_found"));
             #[cfg(target_os = "windows")]
-            self.text_messages.errors.push(flc!("core_ffmpeg_not_found_windows"));
+            self.common_data.text_messages.errors.push(flc!("core_ffmpeg_not_found_windows"));
             #[cfg(target_os = "linux")]
-            self.text_messages.errors.push(flc!(
+            self.common_data.text_messages.errors.push(flc!(
                 "core_ffmpeg_missing_in_snap",
                 generate_translation_hashmap(vec![("url", "https://github.com/snapcrafters/ffmpeg/issues/73".to_string())])
             ));
         } else {
-            self.directories.optimize_directories(true, &mut self.text_messages);
-            self.use_reference_folders = !self.directories.reference_directories.is_empty();
+            self.optimize_dirs_before_start();
+            self.common_data.use_reference_folders = !self.common_data.directories.reference_directories.is_empty();
             if !self.check_for_similar_videos(stop_receiver, progress_sender) {
-                self.stopped_search = true;
+                self.common_data.stopped_search = true;
                 return;
             }
             if !self.sort_videos(stop_receiver, progress_sender) {
-                self.stopped_search = true;
+                self.common_data.stopped_search = true;
                 return;
             }
-            // if self.delete_folders {
-            //     self.delete_empty_folders();
-            // }
         }
+        self.delete_files();
         self.debug_print();
     }
 
-    // pub fn set_delete_folder(&mut self, delete_folder: bool) {
-    //     self.delete_folders = delete_folder;
-    // }
-
-    /// Function to check if folder are empty.
-    /// Parameter `initial_checking` for second check before deleting to be sure that checked folder is still empty
+    #[fun_time(message = "check_for_similar_videos", level = "debug")]
     fn check_for_similar_videos(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
         let mut folders_to_check: Vec<PathBuf> = Vec::with_capacity(1024 * 2); // This should be small enough too not see to big difference and big enough to store most of paths without needing to resize vector
 
-        if !self.allowed_extensions.using_custom_extensions() {
-            self.allowed_extensions.extend_allowed_extensions(VIDEO_FILES_EXTENSIONS);
+        if !self.common_data.allowed_extensions.using_custom_extensions() {
+            self.common_data.allowed_extensions.extend_allowed_extensions(VIDEO_FILES_EXTENSIONS);
         } else {
-            self.allowed_extensions.validate_allowed_extensions(VIDEO_FILES_EXTENSIONS);
-            if !self.allowed_extensions.using_custom_extensions() {
+            self.common_data.allowed_extensions.validate_allowed_extensions(VIDEO_FILES_EXTENSIONS);
+            if !self.common_data.allowed_extensions.using_custom_extensions() {
                 return true;
             }
         }
 
         // Add root folders for finding
-        for id in &self.directories.included_directories {
+        for id in &self.common_data.directories.included_directories {
             folders_to_check.push(id.clone());
         }
 
         let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, 0, 1, 0, CheckingMethod::None, self.tool_type);
+            prepare_thread_handler_common(progress_sender, 0, 1, 0, CheckingMethod::None, self.common_data.tool_type);
 
         while !folders_to_check.is_empty() {
-            if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+            if check_if_stop_received(stop_receiver) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
                 return false;
             }
@@ -295,9 +179,9 @@ impl SimilarVideos {
                                 &mut warnings,
                                 current_folder,
                                 entry_data,
-                                self.recursive_search,
-                                &self.directories,
-                                &self.excluded_items,
+                                self.common_data.recursive_search,
+                                &self.common_data.directories,
+                                &self.common_data.excluded_items,
                             );
                         } else if metadata.is_file() {
                             atomic_counter.fetch_add(1, Ordering::Relaxed);
@@ -314,7 +198,7 @@ impl SimilarVideos {
             // Process collected data
             for (segment, warnings, fe_result) in segments {
                 folders_to_check.extend(segment);
-                self.text_messages.warnings.extend(warnings);
+                self.common_data.text_messages.warnings.extend(warnings);
                 for (name, fe) in fe_result {
                     self.videos_to_check.insert(name, fe);
                 }
@@ -327,19 +211,18 @@ impl SimilarVideos {
     }
 
     fn add_video_file_entry(&self, metadata: &Metadata, entry_data: &DirEntry, fe_result: &mut Vec<(String, FileEntry)>, warnings: &mut Vec<String>, current_folder: &Path) {
-        let Some(file_name_lowercase) = get_lowercase_name(entry_data,
-                                                           warnings) else {
+        let Some(file_name_lowercase) = get_lowercase_name(entry_data, warnings) else {
             return;
         };
 
-        if !self.allowed_extensions.matches_filename(&file_name_lowercase) {
+        if !self.common_data.allowed_extensions.matches_filename(&file_name_lowercase) {
             return;
         }
 
         // Checking files
-        if (self.minimal_file_size..=self.maximal_file_size).contains(&metadata.len()) {
+        if (self.common_data.minimal_file_size..=self.common_data.maximal_file_size).contains(&metadata.len()) {
             let current_file_name = current_folder.join(entry_data.file_name());
-            if self.excluded_items.is_excluded(&current_file_name) {
+            if self.common_data.excluded_items.is_excluded(&current_file_name) {
                 return;
             }
             let current_file_name_str = current_file_name.to_string_lossy().to_string();
@@ -356,30 +239,23 @@ impl SimilarVideos {
         }
     }
 
+    #[fun_time(message = "load_cache_at_start", level = "debug")]
     fn load_cache_at_start(&mut self) -> (BTreeMap<String, FileEntry>, BTreeMap<String, FileEntry>, BTreeMap<String, FileEntry>) {
         let loaded_hash_map;
         let mut records_already_cached: BTreeMap<String, FileEntry> = Default::default();
         let mut non_cached_files_to_check: BTreeMap<String, FileEntry> = Default::default();
 
-        if self.use_cache {
-            loaded_hash_map = match load_hashes_from_file(&mut self.text_messages, self.delete_outdated_cache) {
-                Some(t) => t,
-                None => Default::default(),
-            };
+        if self.common_data.use_cache {
+            let (messages, loaded_items) =
+                load_cache_from_file_generalized_by_path::<FileEntry>(&get_similar_videos_cache_file(), self.get_delete_outdated_cache(), &self.videos_to_check);
+            self.get_text_messages_mut().extend_with_another_messages(messages);
+            loaded_hash_map = loaded_items.unwrap_or_default();
 
-            for (name, file_entry) in &self.videos_to_check {
-                if !loaded_hash_map.contains_key(name) {
-                    // If loaded data doesn't contains current videos info
-                    non_cached_files_to_check.insert(name.clone(), file_entry.clone());
+            for (name, file_entry) in mem::take(&mut self.videos_to_check) {
+                if let Some(cached_file_entry) = loaded_hash_map.get(&name) {
+                    records_already_cached.insert(name.clone(), cached_file_entry.clone());
                 } else {
-                    let loaded_item = loaded_hash_map.get(name).unwrap();
-                    if file_entry.size != loaded_item.size || file_entry.modified_date != loaded_item.modified_date {
-                        // When size or modification date of video changed, then it is clear that is different video
-                        non_cached_files_to_check.insert(name.clone(), file_entry.clone());
-                    } else {
-                        // Checking may be omitted when already there is entry with same size and modification date
-                        records_already_cached.insert(name.clone(), loaded_item.clone());
-                    }
+                    non_cached_files_to_check.insert(name, file_entry);
                 }
             }
         } else {
@@ -389,17 +265,18 @@ impl SimilarVideos {
         (loaded_hash_map, records_already_cached, non_cached_files_to_check)
     }
 
+    #[fun_time(message = "sort_videos", level = "debug")]
     fn sort_videos(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
         let (loaded_hash_map, records_already_cached, non_cached_files_to_check) = self.load_cache_at_start();
 
         let (progress_thread_handle, progress_thread_run, atomic_counter, check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, 1, 1, non_cached_files_to_check.len(), CheckingMethod::None, self.tool_type);
+            prepare_thread_handler_common(progress_sender, 1, 1, non_cached_files_to_check.len(), CheckingMethod::None, self.common_data.tool_type);
 
         let mut vec_file_entry: Vec<FileEntry> = non_cached_files_to_check
             .par_iter()
             .map(|file_entry| {
                 atomic_counter.fetch_add(1, Ordering::Relaxed);
-                if stop_receiver.is_some() && stop_receiver.unwrap().try_recv().is_ok() {
+                if check_if_stop_received(stop_receiver) {
                     check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
                 }
@@ -435,18 +312,11 @@ impl SimilarVideos {
                 hashmap_with_file_entries.insert(file_entry.vhash.src_path().to_string_lossy().to_string(), file_entry.clone());
                 vector_of_hashes.push(file_entry.vhash.clone());
             } else {
-                self.text_messages.warnings.push(file_entry.error.clone());
+                self.common_data.text_messages.warnings.push(file_entry.error.clone());
             }
         }
 
-        if self.use_cache {
-            // Must save all results to file, old loaded from file with all currently counted results
-            let mut all_results: BTreeMap<String, FileEntry> = loaded_hash_map;
-            for file_entry in vec_file_entry {
-                all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
-            }
-            save_hashes_to_file(&all_results, &mut self.text_messages, self.save_also_as_json);
-        }
+        self.save_cache(vec_file_entry, loaded_hash_map);
 
         // Break if stop was clicked after saving to cache
         if check_was_stopped.load(Ordering::Relaxed) {
@@ -456,7 +326,7 @@ impl SimilarVideos {
         self.match_groups_of_videos(vector_of_hashes, &hashmap_with_file_entries);
         self.remove_from_reference_folders();
 
-        if self.use_reference_folders {
+        if self.common_data.use_reference_folders {
             for (_fe, vector) in &self.similar_referenced_vectors {
                 self.information.number_of_duplicates += vector.len();
                 self.information.number_of_groups += 1;
@@ -475,6 +345,21 @@ impl SimilarVideos {
         true
     }
 
+    #[fun_time(message = "save_cache", level = "debug")]
+    fn save_cache(&mut self, vec_file_entry: Vec<FileEntry>, loaded_hash_map: BTreeMap<String, FileEntry>) {
+        if self.common_data.use_cache {
+            // Must save all results to file, old loaded from file with all currently counted results
+            let mut all_results: BTreeMap<String, FileEntry> = loaded_hash_map;
+            for file_entry in vec_file_entry {
+                all_results.insert(file_entry.path.to_string_lossy().to_string(), file_entry);
+            }
+
+            let messages = save_cache_to_file_generalized(&get_similar_videos_cache_file(), &all_results, self.common_data.save_also_as_json, 0);
+            self.get_text_messages_mut().extend_with_another_messages(messages);
+        }
+    }
+
+    #[fun_time(message = "match_groups_of_videos", level = "debug")]
     fn match_groups_of_videos(&mut self, vector_of_hashes: Vec<VideoHash>, hashmap_with_file_entries: &HashMap<String, FileEntry>) {
         let match_group = vid_dup_finder_lib::search(vector_of_hashes, NormalizedTolerance::new(self.tolerance as f64 / 100.0f64));
         let mut collected_similar_videos: Vec<Vec<FileEntry>> = Default::default();
@@ -500,13 +385,15 @@ impl SimilarVideos {
         self.similar_vectors = collected_similar_videos;
     }
 
+    #[fun_time(message = "remove_from_reference_folders", level = "debug")]
     fn remove_from_reference_folders(&mut self) {
-        if self.use_reference_folders {
+        if self.common_data.use_reference_folders {
             self.similar_referenced_vectors = mem::take(&mut self.similar_vectors)
                 .into_iter()
                 .filter_map(|vec_file_entry| {
-                    let (mut files_from_referenced_folders, normal_files): (Vec<_>, Vec<_>) =
-                        vec_file_entry.into_iter().partition(|e| self.directories.is_in_referenced_directory(e.get_path()));
+                    let (mut files_from_referenced_folders, normal_files): (Vec<_>, Vec<_>) = vec_file_entry
+                        .into_iter()
+                        .partition(|e| self.common_data.directories.is_in_referenced_directory(e.get_path()));
 
                     if files_from_referenced_folders.is_empty() || normal_files.is_empty() {
                         None
@@ -518,21 +405,13 @@ impl SimilarVideos {
         }
     }
 
-    /// Set included dir which needs to be relative, exists etc.
-    pub fn set_included_directory(&mut self, included_directory: Vec<PathBuf>) {
-        self.directories.set_included_directory(included_directory, &mut self.text_messages);
-    }
+    fn delete_files(&mut self) {
+        if self.common_data.delete_method == DeleteMethod::None {
+            return;
+        }
 
-    pub fn set_reference_directory(&mut self, reference_directory: Vec<PathBuf>) {
-        self.directories.set_reference_directory(reference_directory);
-    }
-
-    pub fn set_excluded_directory(&mut self, excluded_directory: Vec<PathBuf>) {
-        self.directories.set_excluded_directory(excluded_directory, &mut self.text_messages);
-    }
-
-    pub fn set_excluded_items(&mut self, excluded_items: Vec<String>) {
-        self.excluded_items.set_excluded_items(excluded_items, &mut self.text_messages);
+        let vec_files = self.similar_vectors.iter().collect::<Vec<_>>();
+        delete_files_custom(&vec_files, &self.common_data.delete_method, &mut self.common_data.text_messages, self.common_data.dry_run);
     }
 }
 
@@ -543,149 +422,59 @@ impl Default for SimilarVideos {
 }
 
 impl DebugPrint for SimilarVideos {
-    #[allow(dead_code)]
-    #[allow(unreachable_code)]
+    #[fun_time(message = "debug_print", level = "debug")]
     fn debug_print(&self) {
-        #[cfg(not(debug_assertions))]
-        {
+        if !cfg!(debug_assertions) {
             return;
         }
 
         println!("---------------DEBUG PRINT---------------");
-        println!("Included directories - {:?}", self.directories.included_directories);
+        println!("Included directories - {:?}", self.common_data.directories.included_directories);
+        self.debug_print_common();
         println!("-----------------------------------------");
     }
 }
 
-impl SaveResults for SimilarVideos {
-    fn save_results_to_file(&mut self, file_name: &str) -> bool {
-        let file_name: String = match file_name {
-            "" => "results.txt".to_string(),
-            k => k.to_string(),
-        };
-
-        let file_handler = match File::create(&file_name) {
-            Ok(t) => t,
-            Err(e) => {
-                self.text_messages.errors.push(format!("Failed to create file {file_name}, reason {e}"));
-                return false;
-            }
-        };
-        let mut writer = BufWriter::new(file_handler);
-
-        if let Err(e) = writeln!(
-            writer,
-            "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
-            self.directories.included_directories, self.directories.excluded_directories, self.excluded_items.items
-        ) {
-            self.text_messages.errors.push(format!("Failed to save results to file {file_name}, reason {e}"));
-            return false;
-        }
-
+impl PrintResults for SimilarVideos {
+    fn write_results<T: Write>(&self, writer: &mut T) -> std::io::Result<()> {
         if !self.similar_vectors.is_empty() {
-            write!(writer, "{} videos which have similar friends\n\n", self.similar_vectors.len()).unwrap();
+            write!(writer, "{} videos which have similar friends\n\n", self.similar_vectors.len())?;
 
             for struct_similar in &self.similar_vectors {
-                writeln!(writer, "Found {} videos which have similar friends", self.similar_vectors.len()).unwrap();
+                writeln!(writer, "Found {} videos which have similar friends", struct_similar.len())?;
                 for file_entry in struct_similar {
-                    writeln!(writer, "{} - {}", file_entry.path.display(), format_size(file_entry.size, BINARY)).unwrap();
+                    writeln!(writer, "{} - {}", file_entry.path.display(), format_size(file_entry.size, BINARY))?;
                 }
-                writeln!(writer).unwrap();
+                writeln!(writer)?;
+            }
+        } else if !self.similar_referenced_vectors.is_empty() {
+            write!(writer, "{} videos which have similar friends\n\n", self.similar_referenced_vectors.len())?;
+
+            for (fe, struct_similar) in &self.similar_referenced_vectors {
+                writeln!(writer, "Found {} videos which have similar friends", struct_similar.len())?;
+                writeln!(writer)?;
+                writeln!(writer, "{} - {}", fe.path.display(), format_size(fe.size, BINARY))?;
+                for file_entry in struct_similar {
+                    writeln!(writer, "{} - {}", file_entry.path.display(), format_size(file_entry.size, BINARY))?;
+                }
+                writeln!(writer)?;
             }
         } else {
-            write!(writer, "Not found any similar videos.").unwrap();
+            write!(writer, "Not found any similar videos.")?;
         }
 
-        true
+        Ok(())
     }
-}
 
-impl PrintResults for SimilarVideos {
-    fn print_results(&self) {
-        if !self.similar_vectors.is_empty() {
-            println!("Found {} videos which have similar friends", self.similar_vectors.len());
-
-            for vec_file_entry in &self.similar_vectors {
-                for file_entry in vec_file_entry {
-                    println!("{} - {}", file_entry.path.display(), format_size(file_entry.size, BINARY));
-                }
-                println!();
-            }
-        }
-    }
-}
-
-pub fn save_hashes_to_file(hashmap: &BTreeMap<String, FileEntry>, text_messages: &mut Messages, save_also_as_json: bool) {
-    if let Some(((file_handler, cache_file), (file_handler_json, cache_file_json))) = open_cache_folder(&get_cache_file(), true, save_also_as_json, &mut text_messages.warnings) {
-        {
-            let writer = BufWriter::new(file_handler.unwrap()); // Unwrap because cannot fail here
-            if let Err(e) = bincode::serialize_into(writer, hashmap) {
-                text_messages
-                    .warnings
-                    .push(format!("Cannot write data to cache file {}, reason {}", cache_file.display(), e));
-                return;
-            }
-        }
-        if save_also_as_json {
-            if let Some(file_handler_json) = file_handler_json {
-                let writer = BufWriter::new(file_handler_json);
-                if let Err(e) = serde_json::to_writer(writer, hashmap) {
-                    text_messages
-                        .warnings
-                        .push(format!("Cannot write data to cache file {}, reason {}", cache_file_json.display(), e));
-                    return;
-                }
-            }
-        }
-
-        text_messages.messages.push(format!("Properly saved to file {} cache entries.", hashmap.len()));
-    }
-}
-
-pub fn load_hashes_from_file(text_messages: &mut Messages, delete_outdated_cache: bool) -> Option<BTreeMap<String, FileEntry>> {
-    if let Some(((file_handler, cache_file), (file_handler_json, cache_file_json))) = open_cache_folder(&get_cache_file(), false, true, &mut text_messages.warnings) {
-        let mut hashmap_loaded_entries: BTreeMap<String, FileEntry>;
-        if let Some(file_handler) = file_handler {
-            let reader = BufReader::new(file_handler);
-            hashmap_loaded_entries = match bincode::deserialize_from(reader) {
-                Ok(t) => t,
-                Err(e) => {
-                    text_messages
-                        .warnings
-                        .push(format!("Failed to load data from cache file {}, reason {}", cache_file.display(), e));
-                    return None;
-                }
-            };
+    fn save_results_to_file_as_json(&self, file_name: &str, pretty_print: bool) -> std::io::Result<()> {
+        if self.get_use_reference() {
+            self.save_results_to_file_as_json_internal(file_name, &self.similar_referenced_vectors, pretty_print)
         } else {
-            let reader = BufReader::new(file_handler_json.unwrap()); // Unwrap cannot fail, because at least one file must be valid
-            hashmap_loaded_entries = match serde_json::from_reader(reader) {
-                Ok(t) => t,
-                Err(e) => {
-                    text_messages
-                        .warnings
-                        .push(format!("Failed to load data from cache file {}, reason {}", cache_file_json.display(), e));
-                    return None;
-                }
-            };
+            self.save_results_to_file_as_json_internal(file_name, &self.similar_vectors, pretty_print)
         }
-
-        // Don't load cache data if destination file not exists
-        if delete_outdated_cache {
-            hashmap_loaded_entries.retain(|src_path, _file_entry| Path::new(src_path).exists());
-        }
-
-        text_messages.messages.push(format!("Properly loaded {} cache entries.", hashmap_loaded_entries.len()));
-
-        return Some(hashmap_loaded_entries);
     }
-    None
 }
 
-fn get_cache_file() -> String {
-    "cache_similar_videos.bin".to_string()
-}
-
-#[must_use]
 pub fn check_if_ffmpeg_is_installed() -> bool {
     let vid = "9999czekoczekoczekolada999.txt";
     if let Err(DetermineVideo {
@@ -696,4 +485,39 @@ pub fn check_if_ffmpeg_is_installed() -> bool {
         return false;
     }
     true
+}
+
+impl SimilarVideos {
+    pub fn set_exclude_videos_with_same_size(&mut self, exclude_videos_with_same_size: bool) {
+        self.exclude_videos_with_same_size = exclude_videos_with_same_size;
+    }
+
+    pub fn set_tolerance(&mut self, tolerance: i32) {
+        assert!((0..=MAX_TOLERANCE).contains(&tolerance));
+        self.tolerance = tolerance;
+    }
+
+    pub const fn get_similar_videos(&self) -> &Vec<Vec<FileEntry>> {
+        &self.similar_vectors
+    }
+
+    pub const fn get_information(&self) -> &Info {
+        &self.information
+    }
+
+    pub fn get_similar_videos_referenced(&self) -> &Vec<(FileEntry, Vec<FileEntry>)> {
+        &self.similar_referenced_vectors
+    }
+
+    pub fn get_number_of_base_duplicated_files(&self) -> usize {
+        if self.common_data.use_reference_folders {
+            self.similar_referenced_vectors.len()
+        } else {
+            self.similar_vectors.len()
+        }
+    }
+
+    pub fn get_use_reference(&self) -> bool {
+        self.common_data.use_reference_folders
+    }
 }

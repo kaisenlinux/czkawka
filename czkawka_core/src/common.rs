@@ -11,18 +11,25 @@ use std::{fs, thread};
 #[cfg(feature = "heif")]
 use anyhow::Result;
 use directories_next::ProjectDirs;
+use fun_time::fun_time;
 use futures::channel::mpsc::UnboundedSender;
+use handsome_logger::{ColorChoice, ConfigBuilder, TerminalMode};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use imagepipe::{ImageSource, Pipeline};
 #[cfg(feature = "heif")]
 use libheif_rs::{ColorSpace, HeifContext, RgbChroma};
+use log::{info, LevelFilter, Record};
 
 // #[cfg(feature = "heif")]
 // use libheif_rs::LibHeif;
 use crate::common_dir_traversal::{CheckingMethod, ProgressData, ToolType};
 use crate::common_directory::Directories;
 use crate::common_items::ExcludedItems;
+use crate::common_messages::Messages;
+use crate::common_tool::DeleteMethod;
 use crate::common_traits::ResultEntry;
+use crate::duplicate::make_hard_link;
+use crate::CZKAWKA_VERSION;
 
 static NUMBER_OF_THREADS: state::InitCell<usize> = state::InitCell::new();
 
@@ -31,17 +38,39 @@ pub fn get_number_of_threads() -> usize {
     if *data >= 1 {
         *data
     } else {
-        num_cpus::get()
+        get_default_number_of_threads()
     }
 }
 
-pub fn set_default_number_of_threads() {
-    set_number_of_threads(num_cpus::get());
+fn filtering_messages(record: &Record) -> bool {
+    if let Some(module_path) = record.module_path() {
+        module_path.starts_with("czkawka")
+    } else {
+        true
+    }
 }
 
-#[must_use]
+pub fn setup_logger(disabled_printing: bool) {
+    let log_level = if disabled_printing { LevelFilter::Off } else { LevelFilter::Info };
+
+    let config = ConfigBuilder::default().set_level(log_level).set_message_filtering(Some(filtering_messages)).build();
+    handsome_logger::TermLogger::init(config, TerminalMode::Mixed, ColorChoice::Always).unwrap();
+}
+
+pub fn print_version_mode() {
+    info!(
+        "Czkawka version: {}, was compiled with {} mode",
+        CZKAWKA_VERSION,
+        if cfg!(debug_assertions) { "debug" } else { "release" }
+    );
+}
+
+pub fn set_default_number_of_threads() {
+    set_number_of_threads(get_default_number_of_threads());
+}
+
 pub fn get_default_number_of_threads() -> usize {
-    num_cpus::get()
+    thread::available_parallelism().map(std::num::NonZeroUsize::get).unwrap_or(1)
 }
 
 pub fn set_number_of_threads(thread_number: usize) {
@@ -50,23 +79,22 @@ pub fn set_number_of_threads(thread_number: usize) {
     rayon::ThreadPoolBuilder::new().num_threads(get_number_of_threads()).build_global().unwrap();
 }
 
-/// Class for common functions used across other class/functions
 pub const RAW_IMAGE_EXTENSIONS: &[&str] = &[
     ".mrw", ".arw", ".srf", ".sr2", ".mef", ".orf", ".srw", ".erf", ".kdc", ".kdc", ".dcs", ".rw2", ".raf", ".dcr", ".dng", ".pef", ".crw", ".iiq", ".3fr", ".nrw", ".nef", ".mos",
     ".cr2", ".ari",
 ];
 pub const IMAGE_RS_EXTENSIONS: &[&str] = &[
-    ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".webp", ".gif", ".ico", ".exr",
+    ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".webp", ".gif", ".ico", ".exr", ".qoi",
 ];
 
-pub const IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".bmp", ".webp", ".exr"];
+pub const IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".bmp", ".webp", ".exr", ".qoi"];
 
 pub const IMAGE_RS_BROKEN_FILES_EXTENSIONS: &[&str] = &[
     ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".gif", ".bmp", ".ico", ".jfif", ".jpe", ".pnz", ".dib", ".webp", ".exr",
 ];
-pub const HEIC_EXTENSIONS: &[&str] = &[".heif", ".heifs", ".heic", ".heics", ".avci", ".avcs", ".avif", ".avifs"];
+pub const HEIC_EXTENSIONS: &[&str] = &[".heif", ".heifs", ".heic", ".heics", ".avci", ".avcs", ".avifs"];
 
-pub const ZIP_FILES_EXTENSIONS: &[&str] = &[".zip"];
+pub const ZIP_FILES_EXTENSIONS: &[&str] = &[".zip", ".jar"];
 
 pub const PDF_FILES_EXTENSIONS: &[&str] = &[".pdf"];
 
@@ -78,7 +106,8 @@ pub const VIDEO_FILES_EXTENSIONS: &[&str] = &[
     ".mp4", ".mpv", ".flv", ".mp4a", ".webm", ".mpg", ".mp2", ".mpeg", ".m4p", ".m4v", ".avi", ".wmv", ".qt", ".mov", ".swf", ".mkv",
 ];
 
-pub const LOOP_DURATION: u32 = 200; //ms
+pub const LOOP_DURATION: u32 = 20; //ms
+pub const SEND_PROGRESS_DATA_TIME_BETWEEN: u32 = 200; //ms
 
 pub struct Common();
 
@@ -195,7 +224,6 @@ pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path> + std::fmt::Debug
     Some(DynamicImage::ImageRgb8(image))
 }
 
-#[must_use]
 pub fn split_path(path: &Path) -> (String, String) {
     match (path.parent(), path.file_name()) {
         (Some(dir), Some(file)) => (dir.display().to_string(), file.to_string_lossy().into_owned()),
@@ -204,55 +232,11 @@ pub fn split_path(path: &Path) -> (String, String) {
     }
 }
 
-#[must_use]
 pub fn create_crash_message(library_name: &str, file_path: &str, home_library_url: &str) -> String {
     format!("{library_name} library crashed when opening \"{file_path}\", please check if this is fixed with the latest version of {library_name} (e.g. with https://github.com/qarmin/crates_tester) and if it is not fixed, please report bug here - {home_library_url}")
 }
 
 impl Common {
-    /// Printing time which took between start and stop point and prints also function name
-    #[allow(unused_variables)]
-    pub fn print_time(start_time: SystemTime, end_time: SystemTime, function_name: &str) {
-        #[cfg(debug_assertions)]
-        println!(
-            "Execution of function \"{}\" took {:?}",
-            function_name,
-            end_time.duration_since(start_time).expect("Time cannot go reverse.")
-        );
-    }
-
-    #[must_use]
-    pub fn delete_multiple_entries(entries: &[String]) -> Vec<String> {
-        let mut path: &Path;
-        let mut warnings: Vec<String> = Vec::new();
-        for entry in entries {
-            path = Path::new(entry);
-            if path.is_dir() {
-                if let Err(e) = fs::remove_dir_all(entry) {
-                    warnings.push(format!("Failed to remove folder {entry}, reason {e}"));
-                }
-            } else if let Err(e) = fs::remove_file(entry) {
-                warnings.push(format!("Failed to remove file {entry}, reason {e}"));
-            }
-        }
-        warnings
-    }
-    #[must_use]
-    pub fn delete_one_entry(entry: &str) -> String {
-        let path: &Path = Path::new(entry);
-        let mut warning: String = String::new();
-        if path.is_dir() {
-            if let Err(e) = fs::remove_dir_all(entry) {
-                warning = format!("Failed to remove folder {entry}, reason {e}");
-            }
-        } else if let Err(e) = fs::remove_file(entry) {
-            warning = format!("Failed to remove file {entry}, reason {e}");
-        }
-        warning
-    }
-
-    /// Function to check if directory match expression
-    #[must_use]
     pub fn regex_check(expression: &str, directory: impl AsRef<Path>) -> bool {
         if expression == "*" {
             return true;
@@ -305,7 +289,6 @@ impl Common {
         true
     }
 
-    #[must_use]
     pub fn normalize_windows_path(path_to_change: impl AsRef<Path>) -> PathBuf {
         let path = path_to_change.as_ref();
 
@@ -365,7 +348,98 @@ pub fn check_folder_children(
     dir_result.push(next_folder);
 }
 
-#[must_use]
+// Here we assume, that internal Vec<> have at least 1 object
+#[allow(clippy::ptr_arg)]
+pub fn delete_files_custom<T>(items: &Vec<&Vec<T>>, delete_method: &DeleteMethod, text_messages: &mut Messages, dry_run: bool) -> (u64, usize, usize)
+where
+    T: ResultEntry + Clone,
+{
+    let res = items
+        .iter()
+        .map(|values| {
+            let mut gained_space: u64 = 0;
+            let mut removed_files: usize = 0;
+            let mut failed_to_remove_files: usize = 0;
+            let mut infos = Vec::new();
+            let mut errors = Vec::new();
+
+            let mut all_values = (*values).clone();
+            let len = all_values.len();
+
+            // Sorted from oldest to newest - from smallest value to bigger
+            all_values.sort_unstable_by_key(ResultEntry::get_modified_date);
+
+            if delete_method == &DeleteMethod::HardLink {
+                let original_file = &all_values[0];
+                for file_entry in &all_values[1..] {
+                    if dry_run {
+                        infos.push(format!(
+                            "dry_run - would create hardlink from {:?} to {:?}",
+                            original_file.get_path(),
+                            original_file.get_path()
+                        ));
+                    } else {
+                        if dry_run {
+                            infos.push(format!("Replace file {:?} with hard link to {:?}", original_file.get_path(), file_entry.get_path()));
+                        } else {
+                            if let Err(e) = make_hard_link(original_file.get_path(), file_entry.get_path()) {
+                                errors.push(format!(
+                                    "Cannot create hard link from {:?} to {:?} - {}",
+                                    file_entry.get_path(),
+                                    original_file.get_path(),
+                                    e
+                                ));
+                                failed_to_remove_files += 1;
+                            } else {
+                                gained_space += 1;
+                                removed_files += 1;
+                            }
+                        }
+                    }
+                }
+
+                return (infos, errors, gained_space, removed_files, failed_to_remove_files);
+            }
+
+            let items = match delete_method {
+                DeleteMethod::Delete => &all_values,
+                DeleteMethod::AllExceptNewest => &all_values[..(len - 1)],
+                DeleteMethod::AllExceptOldest => &all_values[1..],
+                DeleteMethod::OneOldest => &all_values[..1],
+                DeleteMethod::OneNewest => &all_values[(len - 1)..],
+                DeleteMethod::HardLink | DeleteMethod::None => unreachable!("HardLink and None should be handled before"),
+            };
+
+            for i in items {
+                if dry_run {
+                    infos.push(format!("dry_run - would delete file: {:?}", i.get_path()));
+                } else {
+                    if let Err(e) = std::fs::remove_file(i.get_path()) {
+                        errors.push(format!("Cannot delete file: {:?} - {e}", i.get_path()));
+                        failed_to_remove_files += 1;
+                    } else {
+                        removed_files += 1;
+                        gained_space += i.get_size();
+                    }
+                }
+            }
+            (infos, errors, gained_space, removed_files, failed_to_remove_files)
+        })
+        .collect::<Vec<_>>();
+
+    let mut gained_space = 0;
+    let mut removed_files = 0;
+    let mut failed_to_remove_files = 0;
+    for (infos, errors, gained_space_v, removed_files_v, failed_to_remove_files_v) in res {
+        text_messages.messages.extend(infos);
+        text_messages.errors.extend(errors);
+        gained_space += gained_space_v;
+        removed_files += removed_files_v;
+        failed_to_remove_files += failed_to_remove_files_v;
+    }
+
+    (gained_space, removed_files, failed_to_remove_files)
+}
 pub fn filter_reference_folders_generic<T>(entries_to_check: Vec<Vec<T>>, directories: &Directories) -> Vec<(T, Vec<T>)>
 where
     T: ResultEntry,
@@ -385,7 +459,6 @@ where
         .collect::<Vec<(T, Vec<T>)>>()
 }
 
-#[must_use]
 pub fn prepare_thread_handler_common(
     progress_sender: Option<&UnboundedSender<ProgressData>>,
     current_stage: u8,
@@ -401,21 +474,28 @@ pub fn prepare_thread_handler_common(
         let progress_send = progress_sender.clone();
         let progress_thread_run = progress_thread_run.clone();
         let atomic_counter = atomic_counter.clone();
-        thread::spawn(move || loop {
-            progress_send
-                .unbounded_send(ProgressData {
-                    checking_method,
-                    current_stage,
-                    max_stage,
-                    entries_checked: atomic_counter.load(Ordering::Relaxed),
-                    entries_to_check: max_value,
-                    tool_type,
-                })
-                .unwrap();
-            if !progress_thread_run.load(Ordering::Relaxed) {
-                break;
+        thread::spawn(move || {
+            let mut time_since_last_send = SystemTime::now();
+
+            loop {
+                if time_since_last_send.elapsed().unwrap().as_millis() > SEND_PROGRESS_DATA_TIME_BETWEEN as u128 {
+                    progress_send
+                        .unbounded_send(ProgressData {
+                            checking_method,
+                            current_stage,
+                            max_stage,
+                            entries_checked: atomic_counter.load(Ordering::Relaxed),
+                            entries_to_check: max_value,
+                            tool_type,
+                        })
+                        .unwrap();
+                    time_since_last_send = SystemTime::now();
+                }
+                if !progress_thread_run.load(Ordering::Relaxed) {
+                    break;
+                }
+                sleep(Duration::from_millis(LOOP_DURATION as u64));
             }
-            sleep(Duration::from_millis(LOOP_DURATION as u64));
         })
     } else {
         thread::spawn(|| {})
@@ -423,6 +503,17 @@ pub fn prepare_thread_handler_common(
     (progress_thread_sender, progress_thread_run, atomic_counter, check_was_stopped)
 }
 
+#[inline]
+pub fn check_if_stop_received(stop_receiver: Option<&crossbeam_channel::Receiver<()>>) -> bool {
+    if let Some(stop_receiver) = stop_receiver {
+        if stop_receiver.try_recv().is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+#[fun_time(message = "send_info_and_wait_for_ending_all_threads", level = "debug")]
 pub fn send_info_and_wait_for_ending_all_threads(progress_thread_run: &Arc<AtomicBool>, progress_thread_handle: JoinHandle<()>) {
     progress_thread_run.store(false, Ordering::Relaxed);
     progress_thread_handle.join().unwrap();
