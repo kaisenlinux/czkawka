@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::env;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
@@ -44,10 +45,15 @@ pub fn connect_button_save(gui_data: &GuiData) {
             NotebookMainEnum::BadExtensions => shared_bad_extensions_state.borrow().save_all_in_one("results_bad_extensions"),
         };
 
+        let current_path = match env::current_dir() {
+            Ok(t) => t.to_string_lossy().to_string(),
+            Err(_) => "<unknown>".to_string(),
+        };
+
         match result {
             Ok(()) => (),
             Err(e) => {
-                entry_info.set_text(&format!("Failed to save results to file {e}"));
+                entry_info.set_text(&format!("Failed to save results to folder {current_path}, reason {e}"));
                 return;
             }
         }
@@ -57,6 +63,7 @@ pub fn connect_button_save(gui_data: &GuiData) {
             &shared_buttons,
             &entry_info,
             &buttons_save_clone,
+            current_path,
         );
     });
 }
@@ -66,8 +73,9 @@ fn post_save_things(
     shared_buttons: &Rc<RefCell<HashMap<NotebookMainEnum, HashMap<BottomButtonsEnum, bool>>>>,
     entry_info: &Entry,
     buttons_save: &Button,
+    current_path: String,
 ) {
-    entry_info.set_text(&flg!("save_results_to_file"));
+    entry_info.set_text(&flg!("save_results_to_file", name = current_path));
     // Set state
     {
         buttons_save.hide();

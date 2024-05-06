@@ -1,14 +1,14 @@
 [package]
 name = "czkawka_core"
-version = "6.1.0"
+version = "7.0.0"
 authors = ["Rafał Mikrut <mikrutrafal@protonmail.com>"]
 edition = "2021"
-rust-version = "1.70.0"
+rust-version = "1.74.0"
 description = "Core of Czkawka app"
 license = "MIT"
 homepage = "https://github.com/qarmin/czkawka"
 repository = "https://github.com/qarmin/czkawka"
-
+build = "build.rs"
 
 [dependencies]
 humansize = "2.1"
@@ -26,26 +26,23 @@ hamming = "0.1"
 
 # Needed by same music
 bitflags = "2.4"
-lofty = "0.16"
-
-# Futures - needed by async progress sender
-futures = "0.3.28"
+lofty = "0.18"
 
 # Needed by broken files
 zip = { version = "0.6", features = ["aes-crypto", "bzip2", "deflate", "time"], default-features = false }
 audio_checker = "0.1"
-pdf = "0.8"
+pdf = "0.9"
 
 # Needed by audio similarity feature
-rusty-chromaprint = "0.1"
+rusty-chromaprint = "0.2"
 symphonia = { version = "0.5", features = ["all"] }
 
 # Hashes for duplicate files
 blake3 = "1.5"
-crc32fast = "1.3"
+crc32fast = "1.4"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
-tempfile = "3.8"
+tempfile = "3.10"
 
 # Video Duplicates
 vid_dup_finder_lib = "0.1"
@@ -58,13 +55,14 @@ serde_json = "1.0"
 
 # Language
 i18n-embed = { version = "0.14", features = ["fluent-system", "desktop-requester"] }
-i18n-embed-fl = "0.7"
-rust-embed = "8.0"
-once_cell = "1.18"
+i18n-embed-fl = "0.8"
+rust-embed = { version = "8.2", features = ["debug-embed"] }
+once_cell = "1.19"
 
 # Raw image files
 rawloader = "0.37"
 imagepipe = "0.5"
+libraw-rs = { version = "0.0.4", optional = true }
 
 # Checking for invalid extensions
 mime_guess = "2.0"
@@ -72,15 +70,22 @@ infer = "0.15"
 
 # Heif/Heic
 libheif-rs = { version = "=0.18.0", optional = true } # Do not upgrade now, since Ubuntu 22.04 not works with newer version
-libheif-sys = { version = "=1.14.2", optional = true } # 1.14.3 brake compilation on Ubuntu 22.04
+libheif-sys = { version = "=1.14.2", optional = true } # 1.14.3 brake compilation on Ubuntu 22.04, so pin it to this version
 anyhow = { version = "1.0" }
 
-state = "0.6"
 
+state = "0.6"
+trash = "3.3"
+
+os_info = { version = "3", default-features = false }
 log = "0.4.20"
 handsome_logger = "0.8"
-fun_time = { version = "0.3.1", features = ["log"] }
+fun_time = { version = "0.3", features = ["log"] }
+
+[build-dependencies]
+rustc_version = "0.4"
 
 [features]
 default = []
 heif = ["dep:libheif-rs", "dep:libheif-sys"]
+libraw = ["dep:libraw-rs"]

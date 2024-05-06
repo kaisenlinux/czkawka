@@ -1,8 +1,9 @@
-use log::info;
 use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 use std::process::Stdio;
+
+use log::info;
 
 #[derive(Default, Clone, Debug)]
 struct CollectedFiles {
@@ -316,17 +317,18 @@ fn collect_all_files_and_dirs(dir: &str) -> std::io::Result<CollectedFiles> {
         let rd = fs::read_dir(folder)?;
         for entry in rd {
             let entry = entry?;
-            let path = entry.path();
+            let file_type = entry.file_type()?;
+            let path_str = entry.path().to_string_lossy().to_string();
 
-            if path.is_dir() {
-                folders.insert(path.display().to_string());
-                folders_to_check.push(path.display().to_string());
-            } else if path.is_symlink() {
-                symlinks.insert(path.display().to_string());
-            } else if path.is_file() {
-                files.insert(path.display().to_string());
+            if file_type.is_dir() {
+                folders.insert(path_str.clone());
+                folders_to_check.push(path_str);
+            } else if file_type.is_symlink() {
+                symlinks.insert(path_str);
+            } else if file_type.is_file() {
+                files.insert(path_str);
             } else {
-                panic!("Unknown type of file {:?}", path);
+                panic!("Unknown type of file {path_str:?}");
             }
         }
     }

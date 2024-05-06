@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::fs;
-use std::fs::{DirEntry, Metadata, ReadDir};
+use std::fs::{DirEntry, FileType, Metadata};
+#[cfg(target_family = "unix")]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::UNIX_EPOCH;
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use fun_time::fun_time;
-use futures::channel::mpsc::UnboundedSender;
 use log::debug;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -16,9 +18,9 @@ use crate::common::{check_if_stop_received, prepare_thread_handler_common, send_
 use crate::common_directory::Directories;
 use crate::common_extensions::Extensions;
 use crate::common_items::ExcludedItems;
+use crate::common_tool::CommonToolData;
 use crate::common_traits::ResultEntry;
 use crate::flc;
-use crate::localizer_core::generate_translation_hashmap;
 
 #[derive(Debug)]
 pub struct ProgressData {
@@ -59,13 +61,11 @@ pub enum CheckingMethod {
     AudioContent,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FileEntry {
     pub path: PathBuf,
     pub size: u64,
     pub modified_date: u64,
-    pub hash: String,
-    pub symlink_info: Option<SymlinkInfo>,
 }
 
 impl ResultEntry for FileEntry {
@@ -82,49 +82,28 @@ impl ResultEntry for FileEntry {
 
 // Symlinks
 
-const MAX_NUMBER_OF_SYMLINK_JUMPS: i32 = 20;
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct SymlinkInfo {
-    pub destination_path: PathBuf,
-    pub type_of_error: ErrorType,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Copy, Deserialize, Serialize)]
 pub enum ErrorType {
     InfiniteRecursion,
     NonExistentFile,
 }
 
-// Empty folders
-
-/// Enum with values which show if folder is empty.
-/// In function "`optimize_folders`" automatically "Maybe" is changed to "Yes", so it is not necessary to put it here
-#[derive(Eq, PartialEq, Copy, Clone, Debug)]
-pub(crate) enum FolderEmptiness {
-    No,
-    Maybe,
+impl Display for ErrorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorType::InfiniteRecursion => write!(f, "Infinite recursion"),
+            ErrorType::NonExistentFile => write!(f, "Non existent file"),
+        }
+    }
 }
-
-/// Struct assigned to each checked folder with parent path(used to ignore parent if children are not empty) and flag which shows if folder is empty
-#[derive(Clone, Debug)]
-pub struct FolderEntry {
-    pub(crate) parent_path: Option<PathBuf>,
-    // Usable only when finding
-    pub(crate) is_empty: FolderEmptiness,
-    pub modified_date: u64,
-}
-
-// Collection mode (files / empty folders)
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum Collect {
-    EmptyFolders,
     InvalidSymlinks,
     Files,
 }
 
-#[derive(Eq, PartialEq, Copy, Clone)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug)]
 enum EntryType {
     File,
     Dir,
@@ -136,7 +115,7 @@ pub struct DirTraversalBuilder<'a, 'b, F> {
     group_by: Option<F>,
     root_dirs: Vec<PathBuf>,
     stop_receiver: Option<&'a Receiver<()>>,
-    progress_sender: Option<&'b UnboundedSender<ProgressData>>,
+    progress_sender: Option<&'b Sender<ProgressData>>,
     minimal_file_size: Option<u64>,
     maximal_file_size: Option<u64>,
     checking_method: CheckingMethod,
@@ -145,7 +124,7 @@ pub struct DirTraversalBuilder<'a, 'b, F> {
     recursive_search: bool,
     directories: Option<Directories>,
     excluded_items: Option<ExcludedItems>,
-    allowed_extensions: Option<Extensions>,
+    extensions: Option<Extensions>,
     tool_type: ToolType,
 }
 
@@ -153,11 +132,11 @@ pub struct DirTraversal<'a, 'b, F> {
     group_by: F,
     root_dirs: Vec<PathBuf>,
     stop_receiver: Option<&'a Receiver<()>>,
-    progress_sender: Option<&'b UnboundedSender<ProgressData>>,
+    progress_sender: Option<&'b Sender<ProgressData>>,
     recursive_search: bool,
     directories: Directories,
     excluded_items: ExcludedItems,
-    allowed_extensions: Extensions,
+    extensions: Extensions,
     minimal_file_size: u64,
     maximal_file_size: u64,
     checking_method: CheckingMethod,
@@ -186,9 +165,9 @@ impl<'a, 'b> DirTraversalBuilder<'a, 'b, ()> {
             collect: Collect::Files,
             recursive_search: false,
             directories: None,
-            allowed_extensions: None,
+            extensions: None,
             excluded_items: None,
-            tool_type: ToolType::BadExtensions,
+            tool_type: ToolType::None,
         }
     }
 }
@@ -199,12 +178,24 @@ impl<'a, 'b, F> DirTraversalBuilder<'a, 'b, F> {
         self
     }
 
+    pub fn common_data(mut self, common_tool_data: &CommonToolData) -> Self {
+        self.root_dirs = common_tool_data.directories.included_directories.clone();
+        self.extensions = Some(common_tool_data.extensions.clone());
+        self.excluded_items = Some(common_tool_data.excluded_items.clone());
+        self.recursive_search = common_tool_data.recursive_search;
+        self.minimal_file_size = Some(common_tool_data.minimal_file_size);
+        self.maximal_file_size = Some(common_tool_data.maximal_file_size);
+        self.tool_type = common_tool_data.tool_type;
+        self.directories = Some(common_tool_data.directories.clone());
+        self
+    }
+
     pub fn stop_receiver(mut self, stop_receiver: Option<&'a Receiver<()>>) -> Self {
         self.stop_receiver = stop_receiver;
         self
     }
 
-    pub fn progress_sender(mut self, progress_sender: Option<&'b UnboundedSender<ProgressData>>) -> Self {
+    pub fn progress_sender(mut self, progress_sender: Option<&'b Sender<ProgressData>>) -> Self {
         self.progress_sender = progress_sender;
         self
     }
@@ -239,8 +230,8 @@ impl<'a, 'b, F> DirTraversalBuilder<'a, 'b, F> {
         self
     }
 
-    pub fn allowed_extensions(mut self, allowed_extensions: Extensions) -> Self {
-        self.allowed_extensions = Some(allowed_extensions);
+    pub fn extensions(mut self, extensions: Extensions) -> Self {
+        self.extensions = Some(extensions);
         self
     }
 
@@ -278,7 +269,7 @@ impl<'a, 'b, F> DirTraversalBuilder<'a, 'b, F> {
             stop_receiver: self.stop_receiver,
             progress_sender: self.progress_sender,
             directories: self.directories,
-            allowed_extensions: self.allowed_extensions,
+            extensions: self.extensions,
             excluded_items: self.excluded_items,
             recursive_search: self.recursive_search,
             maximal_file_size: self.maximal_file_size,
@@ -303,7 +294,7 @@ impl<'a, 'b, F> DirTraversalBuilder<'a, 'b, F> {
             collect: self.collect,
             directories: self.directories.expect("could not build"),
             excluded_items: self.excluded_items.expect("could not build"),
-            allowed_extensions: self.allowed_extensions.unwrap_or_default(),
+            extensions: self.extensions.unwrap_or_default(),
             recursive_search: self.recursive_search,
             tool_type: self.tool_type,
         }
@@ -315,15 +306,10 @@ pub enum DirTraversalResult<T: Ord + PartialOrd> {
         warnings: Vec<String>,
         grouped_file_entries: BTreeMap<T, Vec<FileEntry>>,
     },
-    SuccessFolders {
-        warnings: Vec<String>,
-        folder_entries: BTreeMap<PathBuf, FolderEntry>, // Path, FolderEntry
-    },
     Stopped,
 }
 
-fn entry_type(metadata: &Metadata) -> EntryType {
-    let file_type = metadata.file_type();
+fn entry_type(file_type: FileType) -> EntryType {
     if file_type.is_dir() {
         EntryType::Dir
     } else if file_type.is_symlink() {
@@ -342,26 +328,13 @@ where
 {
     #[fun_time(message = "run(collecting files/dirs)", level = "debug")]
     pub fn run(self) -> DirTraversalResult<T> {
+        assert_ne!(self.tool_type, ToolType::None, "Tool type cannot be None");
+
         let mut all_warnings = vec![];
         let mut grouped_file_entries: BTreeMap<T, Vec<FileEntry>> = BTreeMap::new();
-        let mut folder_entries: BTreeMap<PathBuf, FolderEntry> = BTreeMap::new();
 
-        // Add root folders into result (only for empty folder collection)
-        let mut folders_to_check: Vec<PathBuf> = Vec::with_capacity(1024 * 2); // This should be small enough too not see to big difference and big enough to store most of paths without needing to resize vector
-        if self.collect == Collect::EmptyFolders {
-            for dir in &self.root_dirs {
-                folder_entries.insert(
-                    dir.clone(),
-                    FolderEntry {
-                        parent_path: None,
-                        is_empty: FolderEmptiness::Maybe,
-                        modified_date: 0,
-                    },
-                );
-            }
-        }
         // Add root folders for finding
-        folders_to_check.extend(self.root_dirs);
+        let mut folders_to_check: Vec<PathBuf> = self.root_dirs.clone();
 
         let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
             prepare_thread_handler_common(self.progress_sender, 0, self.max_stage, 0, self.checking_method, self.tool_type);
@@ -370,7 +343,7 @@ where
             collect,
             directories,
             excluded_items,
-            allowed_extensions,
+            extensions,
             recursive_search,
             minimal_file_size,
             maximal_file_size,
@@ -385,85 +358,47 @@ where
             }
 
             let segments: Vec<_> = folders_to_check
-                .par_iter()
+                .into_par_iter()
                 .map(|current_folder| {
                     let mut dir_result = vec![];
                     let mut warnings = vec![];
                     let mut fe_result = vec![];
-                    let mut set_as_not_empty_folder_list = vec![];
-                    let mut folder_entries_list = vec![];
 
-                    let Some(read_dir) = common_read_dir(current_folder, &mut warnings) else {
-                        return (dir_result, warnings, fe_result, set_as_not_empty_folder_list, folder_entries_list);
+                    let Some(read_dir) = common_read_dir(&current_folder, &mut warnings) else {
+                        return (dir_result, warnings, fe_result);
                     };
 
                     let mut counter = 0;
                     // Check every sub folder/file/link etc.
-                    'dir: for entry in read_dir {
-                        let Some((entry_data, metadata)) = common_get_entry_data_metadata(&entry, &mut warnings, current_folder) else {
+                    for entry in read_dir {
+                        let Some(entry_data) = common_get_entry_data(&entry, &mut warnings, &current_folder) else {
                             continue;
                         };
+                        let Ok(file_type) = entry_data.file_type() else { continue };
 
-                        match (entry_type(&metadata), collect) {
+                        match (entry_type(file_type), collect) {
                             (EntryType::Dir, Collect::Files | Collect::InvalidSymlinks) => {
-                                process_dir_in_file_symlink_mode(recursive_search, current_folder, entry_data, &directories, &mut dir_result, &mut warnings, &excluded_items);
-                            }
-                            (EntryType::Dir, Collect::EmptyFolders) => {
-                                counter += 1;
-                                process_dir_in_dir_mode(
-                                    &metadata,
-                                    current_folder,
-                                    entry_data,
-                                    &directories,
-                                    &mut dir_result,
-                                    &mut warnings,
-                                    &excluded_items,
-                                    &mut set_as_not_empty_folder_list,
-                                    &mut folder_entries_list,
-                                );
+                                process_dir_in_file_symlink_mode(recursive_search, entry_data, &directories, &mut dir_result, &mut warnings, &excluded_items);
                             }
                             (EntryType::File, Collect::Files) => {
                                 counter += 1;
                                 process_file_in_file_mode(
-                                    &metadata,
                                     entry_data,
                                     &mut warnings,
                                     &mut fe_result,
-                                    &allowed_extensions,
-                                    current_folder,
+                                    &extensions,
                                     &directories,
                                     &excluded_items,
                                     minimal_file_size,
                                     maximal_file_size,
                                 );
                             }
-                            (EntryType::File | EntryType::Symlink, Collect::EmptyFolders) => {
-                                #[cfg(target_family = "unix")]
-                                if directories.exclude_other_filesystems() {
-                                    match directories.is_on_other_filesystems(current_folder) {
-                                        Ok(true) => continue 'dir,
-                                        Err(e) => warnings.push(e.to_string()),
-                                        _ => (),
-                                    }
-                                }
-
-                                set_as_not_empty_folder_list.push(current_folder.clone());
-                            }
                             (EntryType::File, Collect::InvalidSymlinks) => {
                                 counter += 1;
                             }
                             (EntryType::Symlink, Collect::InvalidSymlinks) => {
                                 counter += 1;
-                                process_symlink_in_symlink_mode(
-                                    &metadata,
-                                    entry_data,
-                                    &mut warnings,
-                                    &mut fe_result,
-                                    &allowed_extensions,
-                                    current_folder,
-                                    &directories,
-                                    &excluded_items,
-                                );
+                                process_symlink_in_symlink_mode(entry_data, &mut warnings, &mut fe_result, &extensions, &directories, &excluded_items);
                             }
                             (EntryType::Symlink, Collect::Files) | (EntryType::Other, _) => {
                                 // nothing to do
@@ -474,45 +409,31 @@ where
                         // Increase counter in batch, because usually it may be slow to add multiple times atomic value
                         atomic_counter.fetch_add(counter, Ordering::Relaxed);
                     }
-                    (dir_result, warnings, fe_result, set_as_not_empty_folder_list, folder_entries_list)
+                    (dir_result, warnings, fe_result)
                 })
                 .collect();
 
-            // Advance the frontier
-            folders_to_check.clear();
+            let required_size = segments.iter().map(|(segment, _, _)| segment.len()).sum::<usize>();
+            folders_to_check = Vec::with_capacity(required_size);
 
             // Process collected data
-            for (segment, warnings, fe_result, set_as_not_empty_folder_list, fe_list) in segments {
+            for (segment, warnings, fe_result) in segments {
                 folders_to_check.extend(segment);
                 all_warnings.extend(warnings);
                 for fe in fe_result {
                     let key = (self.group_by)(&fe);
                     grouped_file_entries.entry(key).or_default().push(fe);
                 }
-                for current_folder in &set_as_not_empty_folder_list {
-                    set_as_not_empty_folder(&mut folder_entries, current_folder);
-                }
-                for (path, entry) in fe_list {
-                    folder_entries.insert(path, entry);
-                }
             }
         }
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
 
-        debug!(
-            "Collected {} files, {} folders",
-            grouped_file_entries.values().map(Vec::len).sum::<usize>(),
-            folder_entries.len()
-        );
+        debug!("Collected {} files", grouped_file_entries.values().map(Vec::len).sum::<usize>());
 
         match collect {
             Collect::Files | Collect::InvalidSymlinks => DirTraversalResult::SuccessFiles {
                 grouped_file_entries,
-                warnings: all_warnings,
-            },
-            Collect::EmptyFolders => DirTraversalResult::SuccessFolders {
-                folder_entries,
                 warnings: all_warnings,
             },
         }
@@ -520,93 +441,51 @@ where
 }
 
 fn process_file_in_file_mode(
-    metadata: &Metadata,
     entry_data: &DirEntry,
     warnings: &mut Vec<String>,
     fe_result: &mut Vec<FileEntry>,
-    allowed_extensions: &Extensions,
-    current_folder: &Path,
+    extensions: &Extensions,
     directories: &Directories,
     excluded_items: &ExcludedItems,
     minimal_file_size: u64,
     maximal_file_size: u64,
 ) {
-    let Some(file_name_lowercase) = get_lowercase_name(entry_data, warnings) else {
-        return;
-    };
-
-    if !allowed_extensions.matches_filename(&file_name_lowercase) {
+    if !extensions.check_if_entry_have_valid_extension(entry_data) {
         return;
     }
 
-    if (minimal_file_size..=maximal_file_size).contains(&metadata.len()) {
-        let current_file_name = current_folder.join(entry_data.file_name());
-        if excluded_items.is_excluded(&current_file_name) {
-            return;
-        }
-
-        #[cfg(target_family = "unix")]
-        if directories.exclude_other_filesystems() {
-            match directories.is_on_other_filesystems(&current_file_name) {
-                Ok(true) => return,
-                Err(e) => warnings.push(e),
-                _ => (),
-            }
-        }
-
-        // Creating new file entry
-        let fe: FileEntry = FileEntry {
-            path: current_file_name.clone(),
-            size: metadata.len(),
-            modified_date: get_modified_time(metadata, warnings, &current_file_name, false),
-            hash: String::new(),
-            symlink_info: None,
-        };
-
-        fe_result.push(fe);
-    }
-}
-
-fn process_dir_in_dir_mode(
-    metadata: &Metadata,
-    current_folder: &Path,
-    entry_data: &DirEntry,
-    directories: &Directories,
-    dir_result: &mut Vec<PathBuf>,
-    warnings: &mut Vec<String>,
-    excluded_items: &ExcludedItems,
-    set_as_not_empty_folder_list: &mut Vec<PathBuf>,
-    folder_entries_list: &mut Vec<(PathBuf, FolderEntry)>,
-) {
-    let next_folder = current_folder.join(entry_data.file_name());
-    if excluded_items.is_excluded(&next_folder) || directories.is_excluded(&next_folder) {
-        set_as_not_empty_folder_list.push(current_folder.to_path_buf());
+    let current_file_name = entry_data.path();
+    if excluded_items.is_excluded(&current_file_name) {
         return;
     }
 
     #[cfg(target_family = "unix")]
     if directories.exclude_other_filesystems() {
-        match directories.is_on_other_filesystems(&next_folder) {
+        match directories.is_on_other_filesystems(&current_file_name) {
             Ok(true) => return,
             Err(e) => warnings.push(e),
             _ => (),
         }
     }
 
-    dir_result.push(next_folder.clone());
-    folder_entries_list.push((
-        next_folder,
-        FolderEntry {
-            parent_path: Some(current_folder.to_path_buf()),
-            is_empty: FolderEmptiness::Maybe,
-            modified_date: get_modified_time(metadata, warnings, current_folder, true),
-        },
-    ));
+    let Some(metadata) = common_get_metadata_dir(entry_data, warnings, &current_file_name) else {
+        return;
+    };
+
+    if (minimal_file_size..=maximal_file_size).contains(&metadata.len()) {
+        // Creating new file entry
+        let fe: FileEntry = FileEntry {
+            size: metadata.len(),
+            modified_date: get_modified_time(&metadata, warnings, &current_file_name, false),
+            path: current_file_name,
+        };
+
+        fe_result.push(fe);
+    }
 }
 
 fn process_dir_in_file_symlink_mode(
     recursive_search: bool,
-    current_folder: &Path,
     entry_data: &DirEntry,
     directories: &Directories,
     dir_result: &mut Vec<PathBuf>,
@@ -617,118 +496,111 @@ fn process_dir_in_file_symlink_mode(
         return;
     }
 
-    let next_folder = current_folder.join(entry_data.file_name());
-    if directories.is_excluded(&next_folder) {
+    let dir_path = entry_data.path();
+    if directories.is_excluded(&dir_path) {
         return;
     }
 
-    if excluded_items.is_excluded(&next_folder) {
+    if excluded_items.is_excluded(&dir_path) {
         return;
     }
 
     #[cfg(target_family = "unix")]
     if directories.exclude_other_filesystems() {
-        match directories.is_on_other_filesystems(&next_folder) {
+        match directories.is_on_other_filesystems(&dir_path) {
             Ok(true) => return,
             Err(e) => warnings.push(e),
             _ => (),
         }
     }
 
-    dir_result.push(next_folder);
+    dir_result.push(dir_path);
 }
 
 fn process_symlink_in_symlink_mode(
-    metadata: &Metadata,
     entry_data: &DirEntry,
     warnings: &mut Vec<String>,
     fe_result: &mut Vec<FileEntry>,
-    allowed_extensions: &Extensions,
-    current_folder: &Path,
+    extensions: &Extensions,
     directories: &Directories,
     excluded_items: &ExcludedItems,
 ) {
-    let Some(file_name_lowercase) = get_lowercase_name(entry_data, warnings) else {
-        return;
-    };
-
-    if !allowed_extensions.matches_filename(&file_name_lowercase) {
+    if !extensions.check_if_entry_have_valid_extension(entry_data) {
         return;
     }
 
-    let current_file_name = current_folder.join(entry_data.file_name());
+    let current_file_name = entry_data.path();
     if excluded_items.is_excluded(&current_file_name) {
         return;
     }
 
     #[cfg(target_family = "unix")]
     if directories.exclude_other_filesystems() {
-        match directories.is_on_other_filesystems(current_folder) {
+        match directories.is_on_other_filesystems(&current_file_name) {
             Ok(true) => return,
             Err(e) => warnings.push(e),
             _ => (),
         }
     }
 
-    let mut destination_path = PathBuf::new();
-    let type_of_error;
-
-    match current_file_name.read_link() {
-        Ok(t) => {
-            destination_path.push(t);
-            let mut number_of_loop = 0;
-            let mut current_path = current_file_name.clone();
-            loop {
-                if number_of_loop == 0 && !current_path.exists() {
-                    type_of_error = ErrorType::NonExistentFile;
-                    break;
-                }
-                if number_of_loop == MAX_NUMBER_OF_SYMLINK_JUMPS {
-                    type_of_error = ErrorType::InfiniteRecursion;
-                    break;
-                }
-
-                current_path = match current_path.read_link() {
-                    Ok(t) => t,
-                    Err(_inspected) => {
-                        // Looks that some next symlinks are broken, but we do nothing with it - TODO why they are broken
-                        return;
-                    }
-                };
-
-                number_of_loop += 1;
-            }
-        }
-        Err(_inspected) => {
-            // Failed to load info about it
-            type_of_error = ErrorType::NonExistentFile;
-        }
-    }
+    let Some(metadata) = common_get_metadata_dir(entry_data, warnings, &current_file_name) else {
+        return;
+    };
 
     // Creating new file entry
     let fe: FileEntry = FileEntry {
-        path: current_file_name.clone(),
-        modified_date: get_modified_time(metadata, warnings, &current_file_name, false),
-        size: 0,
-        hash: String::new(),
-        symlink_info: Some(SymlinkInfo { destination_path, type_of_error }),
+        size: metadata.len(),
+        modified_date: get_modified_time(&metadata, warnings, &current_file_name, false),
+        path: current_file_name,
     };
 
-    // Adding files to Vector
     fe_result.push(fe);
 }
 
-pub fn common_read_dir(current_folder: &Path, warnings: &mut Vec<String>) -> Option<ReadDir> {
+pub fn common_read_dir(current_folder: &Path, warnings: &mut Vec<String>) -> Option<Vec<Result<DirEntry, std::io::Error>>> {
     match fs::read_dir(current_folder) {
-        Ok(t) => Some(t),
+        Ok(t) => {
+            // Make directory traversal order stable
+            let mut r: Vec<_> = t.collect();
+            r.sort_by_key(|d| match d {
+                Ok(f) => f.path(),
+                _ => PathBuf::new(),
+            });
+            Some(r)
+        }
         Err(e) => {
-            warnings.push(flc!(
-                "core_cannot_open_dir",
-                generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
-            ));
+            warnings.push(flc!("core_cannot_open_dir", dir = current_folder.to_string_lossy().to_string(), reason = e.to_string()));
             None
         }
     }
+}
+pub fn common_get_entry_data<'a>(entry: &'a Result<DirEntry, std::io::Error>, warnings: &mut Vec<String>, current_folder: &Path) -> Option<&'a DirEntry> {
+    let entry_data = match entry {
+        Ok(t) => t,
+        Err(e) => {
+            warnings.push(flc!(
+                "core_cannot_read_entry_dir",
+                dir = current_folder.to_string_lossy().to_string(),
+                reason = e.to_string()
+            ));
+            return None;
+        }
+    };
+    Some(entry_data)
+}
+pub fn common_get_metadata_dir(entry_data: &DirEntry, warnings: &mut Vec<String>, current_folder: &Path) -> Option<Metadata> {
+    let metadata: Metadata = match entry_data.metadata() {
+        Ok(t) => t,
+        Err(e) => {
+            warnings.push(flc!(
+                "core_cannot_read_metadata_dir",
+                dir = current_folder.to_string_lossy().to_string(),
+                reason = e.to_string()
+            ));
+            return None;
+        }
+    };
+    Some(metadata)
 }
 
 pub fn common_get_entry_data_metadata<'a>(entry: &'a Result<DirEntry, std::io::Error>, warnings: &mut Vec<String>, current_folder: &Path) -> Option<(&'a DirEntry, Metadata)> {
@@ -737,7 +609,8 @@ pub fn common_get_entry_data_metadata<'a>(entry: &'a Result<DirEntry, std::io::E
         Err(e) => {
             warnings.push(flc!(
                 "core_cannot_read_entry_dir",
-                generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                dir = current_folder.to_string_lossy().to_string(),
+                reason = e.to_string()
             ));
             return None;
         }
@@ -747,7 +620,8 @@ pub fn common_get_entry_data_metadata<'a>(entry: &'a Result<DirEntry, std::io::E
         Err(e) => {
             warnings.push(flc!(
                 "core_cannot_read_metadata_dir",
-                generate_translation_hashmap(vec![("dir", current_folder.display().to_string()), ("reason", e.to_string())])
+                dir = current_folder.to_string_lossy().to_string(),
+                reason = e.to_string()
             ));
             return None;
         }
@@ -760,54 +634,219 @@ pub fn get_modified_time(metadata: &Metadata, warnings: &mut Vec<String>, curren
         Ok(t) => match t.duration_since(UNIX_EPOCH) {
             Ok(d) => d.as_secs(),
             Err(_inspected) => {
-                let translation_hashmap = generate_translation_hashmap(vec![("name", current_file_name.display().to_string())]);
                 if is_folder {
-                    warnings.push(flc!("core_folder_modified_before_epoch", translation_hashmap));
+                    warnings.push(flc!("core_folder_modified_before_epoch", name = current_file_name.to_string_lossy().to_string()));
                 } else {
-                    warnings.push(flc!("core_file_modified_before_epoch", translation_hashmap));
+                    warnings.push(flc!("core_file_modified_before_epoch", name = current_file_name.to_string_lossy().to_string()));
                 }
                 0
             }
         },
         Err(e) => {
-            let translation_hashmap = generate_translation_hashmap(vec![("name", current_file_name.display().to_string()), ("reason", e.to_string())]);
             if is_folder {
-                warnings.push(flc!("core_folder_no_modification_date", translation_hashmap));
+                warnings.push(flc!(
+                    "core_folder_no_modification_date",
+                    name = current_file_name.to_string_lossy().to_string(),
+                    reason = e.to_string()
+                ));
             } else {
-                warnings.push(flc!("core_file_no_modification_date", translation_hashmap));
+                warnings.push(flc!(
+                    "core_file_no_modification_date",
+                    name = current_file_name.to_string_lossy().to_string(),
+                    reason = e.to_string()
+                ));
             }
             0
         }
     }
 }
 
-pub fn get_lowercase_name(entry_data: &DirEntry, warnings: &mut Vec<String>) -> Option<String> {
-    let name = match entry_data.file_name().into_string() {
-        Ok(t) => t,
-        Err(_inspected) => {
-            warnings.push(flc!(
-                "core_file_not_utf8_name",
-                generate_translation_hashmap(vec![("name", entry_data.path().display().to_string())])
-            ));
-            return None;
-        }
-    }
-    .to_lowercase();
-    Some(name)
+#[cfg(target_family = "windows")]
+pub fn inode(_fe: &FileEntry) -> Option<u64> {
+    None
 }
 
-fn set_as_not_empty_folder(folder_entries: &mut BTreeMap<PathBuf, FolderEntry>, current_folder: &Path) {
-    let mut d = folder_entries.get_mut(current_folder).unwrap();
-    // Not folder so it may be a file or symbolic link so it isn't empty
-    d.is_empty = FolderEmptiness::No;
-    // Loop to recursively set as non empty this and all his parent folders
-    loop {
-        d.is_empty = FolderEmptiness::No;
-        if d.parent_path.is_some() {
-            let cf = d.parent_path.clone().unwrap();
-            d = folder_entries.get_mut(&cf).unwrap();
-        } else {
-            break;
+#[cfg(target_family = "unix")]
+pub fn inode(fe: &FileEntry) -> Option<u64> {
+    if let Ok(meta) = fs::metadata(&fe.path) {
+        Some(meta.ino())
+    } else {
+        None
+    }
+}
+
+pub fn take_1_per_inode((k, mut v): (Option<u64>, Vec<FileEntry>)) -> Vec<FileEntry> {
+    if k.is_some() {
+        v.drain(1..);
+    }
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common_tool::*;
+    use once_cell::sync::Lazy;
+    use std::collections::HashSet;
+    use std::fs;
+    use std::fs::File;
+    use std::io;
+    use std::io::prelude::*;
+    use std::time::{Duration, SystemTime};
+    use tempfile::TempDir;
+
+    impl CommonData for CommonToolData {
+        fn get_cd(&self) -> &CommonToolData {
+            self
         }
+        fn get_cd_mut(&mut self) -> &mut CommonToolData {
+            self
+        }
+    }
+
+    static NOW: Lazy<SystemTime> = Lazy::new(|| SystemTime::UNIX_EPOCH + Duration::new(100, 0));
+    const CONTENT: &[u8; 1] = b"a";
+
+    fn create_files(dir: &TempDir) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
+        let (src, hard, other) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("c"));
+
+        let mut file = File::create(&src)?;
+        file.write_all(CONTENT)?;
+        fs::hard_link(&src, &hard)?;
+        file.set_modified(*NOW)?;
+
+        let mut file = File::create(&other)?;
+        file.write_all(CONTENT)?;
+        file.set_modified(*NOW)?;
+        Ok((src, hard, other))
+    }
+
+    #[test]
+    fn test_traversal() -> io::Result<()> {
+        let dir = tempfile::Builder::new().tempdir()?;
+        let (src, hard, other) = create_files(&dir)?;
+        let secs = NOW.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+
+        let mut common_data = CommonToolData::new(ToolType::SimilarImages);
+        common_data.directories.set_included_directory([dir.path().to_owned()].to_vec());
+        common_data.set_minimal_file_size(0);
+
+        match DirTraversalBuilder::new().group_by(|_fe| ()).common_data(&common_data).build().run() {
+            DirTraversalResult::SuccessFiles {
+                warnings: _,
+                grouped_file_entries,
+            } => {
+                let actual: HashSet<_> = grouped_file_entries.into_values().flatten().collect();
+                assert_eq!(
+                    HashSet::from([
+                        FileEntry {
+                            path: src,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                        FileEntry {
+                            path: hard,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                        FileEntry {
+                            path: other,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                    ]),
+                    actual
+                );
+            }
+            _ => {
+                panic!("Expect SuccessFiles.");
+            }
+        };
+        Ok(())
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn test_traversal_group_by_inode() -> io::Result<()> {
+        let dir = tempfile::Builder::new().tempdir()?;
+        let (src, _, other) = create_files(&dir)?;
+        let secs = NOW.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+
+        let mut common_data = CommonToolData::new(ToolType::SimilarImages);
+        common_data.directories.set_included_directory([dir.path().to_owned()].to_vec());
+        common_data.set_minimal_file_size(0);
+
+        match DirTraversalBuilder::new().group_by(inode).common_data(&common_data).build().run() {
+            DirTraversalResult::SuccessFiles {
+                warnings: _,
+                grouped_file_entries,
+            } => {
+                let actual: HashSet<_> = grouped_file_entries.into_iter().flat_map(take_1_per_inode).collect();
+                assert_eq!(
+                    HashSet::from([
+                        FileEntry {
+                            path: src,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                        FileEntry {
+                            path: other,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                    ]),
+                    actual
+                );
+            }
+            _ => {
+                panic!("Expect SuccessFiles.");
+            }
+        };
+        Ok(())
+    }
+
+    #[cfg(target_family = "windows")]
+    #[test]
+    fn test_traversal_group_by_inode() -> io::Result<()> {
+        let dir = tempfile::Builder::new().tempdir()?;
+        let (src, hard, other) = create_files(&dir)?;
+        let secs = NOW.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+
+        let mut common_data = CommonToolData::new(ToolType::SimilarImages);
+        common_data.directories.set_included_directory([dir.path().to_owned()].to_vec());
+        common_data.set_minimal_file_size(0);
+
+        match DirTraversalBuilder::new().group_by(inode).common_data(&common_data).build().run() {
+            DirTraversalResult::SuccessFiles {
+                warnings: _,
+                grouped_file_entries,
+            } => {
+                let actual: HashSet<_> = grouped_file_entries.into_iter().flat_map(take_1_per_inode).collect();
+                assert_eq!(
+                    HashSet::from([
+                        FileEntry {
+                            path: src,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                        FileEntry {
+                            path: hard,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                        FileEntry {
+                            path: other,
+                            size: 1,
+                            modified_date: secs,
+                        },
+                    ]),
+                    actual
+                );
+            }
+            _ => {
+                panic!("Expect SuccessFiles.");
+            }
+        };
+        Ok(())
     }
 }

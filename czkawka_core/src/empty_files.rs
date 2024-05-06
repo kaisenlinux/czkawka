@@ -1,10 +1,8 @@
 use std::fs;
-
 use std::io::prelude::*;
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use fun_time::fun_time;
-use futures::channel::mpsc::UnboundedSender;
 use log::debug;
 
 use crate::common_dir_traversal::{DirTraversalBuilder, DirTraversalResult, FileEntry, ProgressData, ToolType};
@@ -41,8 +39,8 @@ impl EmptyFiles {
     }
 
     #[fun_time(message = "find_empty_files", level = "info")]
-    pub fn find_empty_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) {
-        self.optimize_dirs_before_start();
+    pub fn find_empty_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) {
+        self.prepare_items();
         if !self.check_files(stop_receiver, progress_sender) {
             self.common_data.stopped_search = true;
             return;
@@ -52,18 +50,14 @@ impl EmptyFiles {
     }
 
     #[fun_time(message = "check_files", level = "debug")]
-    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
+    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
         let result = DirTraversalBuilder::new()
-            .root_dirs(self.common_data.directories.included_directories.clone())
+            .common_data(&self.common_data)
             .group_by(|_fe| ())
             .stop_receiver(stop_receiver)
             .progress_sender(progress_sender)
             .minimal_file_size(0)
             .maximal_file_size(0)
-            .directories(self.common_data.directories.clone())
-            .allowed_extensions(self.common_data.allowed_extensions.clone())
-            .excluded_items(self.common_data.excluded_items.clone())
-            .recursive_search(self.common_data.recursive_search)
             .build()
             .run();
 
@@ -77,9 +71,7 @@ impl EmptyFiles {
 
                 true
             }
-            DirTraversalResult::SuccessFolders { .. } => {
-                unreachable!()
-            }
+
             DirTraversalResult::Stopped => false,
         }
     }
@@ -89,8 +81,8 @@ impl EmptyFiles {
         match self.common_data.delete_method {
             DeleteMethod::Delete => {
                 for file_entry in &self.empty_files {
-                    if fs::remove_file(file_entry.path.clone()).is_err() {
-                        self.common_data.text_messages.warnings.push(file_entry.path.display().to_string());
+                    if fs::remove_file(&file_entry.path).is_err() {
+                        self.common_data.text_messages.warnings.push(file_entry.path.to_string_lossy().to_string());
                     }
                 }
             }
@@ -127,13 +119,15 @@ impl PrintResults for EmptyFiles {
         writeln!(
             writer,
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
-            self.common_data.directories.included_directories, self.common_data.directories.excluded_directories, self.common_data.excluded_items.items
+            self.common_data.directories.included_directories,
+            self.common_data.directories.excluded_directories,
+            self.common_data.excluded_items.get_excluded_items()
         )?;
 
         if !self.empty_files.is_empty() {
             writeln!(writer, "Found {} empty files.", self.information.number_of_empty_files)?;
             for file_entry in &self.empty_files {
-                writeln!(writer, "{}", file_entry.path.display())?;
+                writeln!(writer, "{:?}", file_entry.path)?;
             }
         } else {
             write!(writer, "Not found any empty files.")?;

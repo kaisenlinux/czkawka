@@ -1,44 +1,47 @@
-use crate::common;
-use crate::common_messages::Messages;
-use crate::common_traits::ResultEntry;
-use crate::duplicate::HashType;
-use crate::similar_images::{convert_algorithm_to_string, convert_filters_to_string};
+use std::collections::BTreeMap;
+use std::io::{BufReader, BufWriter};
+
 use fun_time::fun_time;
 use image::imageops::FilterType;
 use image_hasher::HashAlg;
 use log::debug;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::io::{BufReader, BufWriter};
+
+use crate::common;
+use crate::common_messages::Messages;
+use crate::common_traits::ResultEntry;
+use crate::duplicate::HashType;
+use crate::similar_images::{convert_algorithm_to_string, convert_filters_to_string};
+
+const CACHE_VERSION: &str = "70";
 
 pub fn get_broken_files_cache_file() -> String {
-    "cache_broken_files_61.bin".to_string()
+    format!("cache_broken_files_{CACHE_VERSION}.bin")
 }
 
 pub fn get_similar_images_cache_file(hash_size: &u8, hash_alg: &HashAlg, image_filter: &FilterType) -> String {
     format!(
-        "cache_similar_images_{}_{}_{}_61.bin",
-        hash_size,
+        "cache_similar_images_{hash_size}_{}_{}_{CACHE_VERSION}.bin",
         convert_algorithm_to_string(hash_alg),
         convert_filters_to_string(image_filter),
     )
 }
 
 pub fn get_similar_videos_cache_file() -> String {
-    "cache_similar_videos_61.bin".to_string()
+    format!("cache_similar_videos_{CACHE_VERSION}.bin")
 }
-pub fn get_similar_music_cache_file(checking_tags: bool) -> &'static str {
+pub fn get_similar_music_cache_file(checking_tags: bool) -> String {
     if checking_tags {
-        "cache_same_music_tags_61.bin"
+        format!("cache_same_music_tags_{CACHE_VERSION}.bin")
     } else {
-        "cache_same_music_fingerprints_61.bin"
+        format!("cache_same_music_fingerprints_{CACHE_VERSION}.bin")
     }
 }
 
 pub fn get_duplicate_cache_file(type_of_hash: &HashType, is_prehash: bool) -> String {
     let prehash_str = if is_prehash { "_prehash" } else { "" };
-    format!("cache_duplicates_{type_of_hash:?}{prehash_str}_61.bin")
+    format!("cache_duplicates_{type_of_hash:?}{prehash_str}_{CACHE_VERSION}.bin")
 }
 
 #[fun_time(message = "save_cache_to_file_generalized", level = "debug")]
@@ -55,25 +58,21 @@ where
         {
             let writer = BufWriter::new(file_handler.unwrap()); // Unwrap because cannot fail here
             if let Err(e) = bincode::serialize_into(writer, &hashmap_to_save) {
-                text_messages
-                    .warnings
-                    .push(format!("Cannot write data to cache file {}, reason {}", cache_file.display(), e));
-                debug!("Failed to save cache to file {:?}", cache_file);
+                text_messages.warnings.push(format!("Cannot write data to cache file {cache_file:?}, reason {e}"));
+                debug!("Failed to save cache to file {cache_file:?}");
                 return text_messages;
             }
-            debug!("Saved binary to file {:?}", cache_file);
+            debug!("Saved binary to file {cache_file:?}");
         }
         if save_also_as_json {
             if let Some(file_handler_json) = file_handler_json {
                 let writer = BufWriter::new(file_handler_json);
                 if let Err(e) = serde_json::to_writer(writer, &hashmap_to_save) {
-                    text_messages
-                        .warnings
-                        .push(format!("Cannot write data to cache file {}, reason {}", cache_file_json.display(), e));
-                    debug!("Failed to save cache to file {:?}", cache_file_json);
+                    text_messages.warnings.push(format!("Cannot write data to cache file {cache_file_json:?}, reason {e}"));
+                    debug!("Failed to save cache to file {cache_file_json:?}");
                     return text_messages;
                 }
-                debug!("Saved json to file {:?}", cache_file_json);
+                debug!("Saved json to file {cache_file_json:?}");
             }
         }
 
@@ -182,10 +181,8 @@ where
             vec_loaded_entries = match bincode::deserialize_from(reader) {
                 Ok(t) => t,
                 Err(e) => {
-                    text_messages
-                        .warnings
-                        .push(format!("Failed to load data from cache file {}, reason {}", cache_file.display(), e));
-                    debug!("Failed to load cache from file {:?}", cache_file);
+                    text_messages.warnings.push(format!("Failed to load data from cache file {cache_file:?}, reason {e}"));
+                    debug!("Failed to load cache from file {cache_file:?}");
                     return (text_messages, None);
                 }
             };
@@ -194,10 +191,8 @@ where
             vec_loaded_entries = match serde_json::from_reader(reader) {
                 Ok(t) => t,
                 Err(e) => {
-                    text_messages
-                        .warnings
-                        .push(format!("Failed to load data from cache file {}, reason {}", cache_file_json.display(), e));
-                    debug!("Failed to load cache from file {:?}", cache_file);
+                    text_messages.warnings.push(format!("Failed to load data from cache file {cache_file_json:?}, reason {e}"));
+                    debug!("Failed to load cache from file {cache_file:?}");
                     return (text_messages, None);
                 }
             };
@@ -211,11 +206,9 @@ where
         vec_loaded_entries = vec_loaded_entries
             .into_par_iter()
             .filter(|file_entry| {
-                if delete_outdated_cache && !file_entry.get_path().exists() {
-                    return false;
-                }
+                let path = file_entry.get_path();
 
-                let file_entry_path_str = file_entry.get_path().to_string_lossy().to_string();
+                let file_entry_path_str = path.to_string_lossy().to_string();
                 if let Some(used_file) = used_files.get(&file_entry_path_str) {
                     if file_entry.get_size() != used_file.get_size() {
                         return false;
@@ -223,6 +216,10 @@ where
                     if file_entry.get_modified_date() != used_file.get_modified_date() {
                         return false;
                     }
+                }
+
+                if delete_outdated_cache && !path.exists() {
+                    return false;
                 }
 
                 true

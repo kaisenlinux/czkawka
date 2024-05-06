@@ -11,7 +11,7 @@ pub struct CommonToolData {
     pub(crate) tool_type: ToolType,
     pub(crate) text_messages: Messages,
     pub(crate) directories: Directories,
-    pub(crate) allowed_extensions: Extensions,
+    pub(crate) extensions: Extensions,
     pub(crate) excluded_items: ExcludedItems,
     pub(crate) recursive_search: bool,
     pub(crate) delete_method: DeleteMethod,
@@ -43,7 +43,7 @@ impl CommonToolData {
             tool_type,
             text_messages: Messages::new(),
             directories: Directories::new(),
-            allowed_extensions: Extensions::new(),
+            extensions: Extensions::new(),
             excluded_items: ExcludedItems::new(),
             recursive_search: true,
             delete_method: DeleteMethod::None,
@@ -112,7 +112,8 @@ pub trait CommonData {
     }
 
     fn set_reference_directory(&mut self, reference_directory: Vec<PathBuf>) {
-        self.get_cd_mut().directories.set_reference_directory(reference_directory);
+        let messages = self.get_cd_mut().directories.set_reference_directory(&reference_directory);
+        self.get_cd_mut().text_messages.extend_with_another_messages(messages);
     }
 
     #[cfg(target_family = "unix")]
@@ -167,19 +168,22 @@ pub trait CommonData {
         self.get_cd_mut().text_messages.extend_with_another_messages(messages);
     }
     fn set_allowed_extensions(&mut self, allowed_extensions: String) {
-        let messages = self.get_cd_mut().allowed_extensions.set_allowed_extensions(allowed_extensions);
+        let messages = self.get_cd_mut().extensions.set_allowed_extensions(allowed_extensions);
+        self.get_cd_mut().text_messages.extend_with_another_messages(messages);
+    }
+    fn set_excluded_extensions(&mut self, excluded_extensions: String) {
+        let messages = self.get_cd_mut().extensions.set_excluded_extensions(excluded_extensions);
         self.get_cd_mut().text_messages.extend_with_another_messages(messages);
     }
 
     fn set_excluded_items(&mut self, excluded_items: Vec<String>) {
-        let (messages, warnings, errors) = self.get_cd_mut().excluded_items.set_excluded_items(excluded_items);
-        self.get_cd_mut().text_messages.messages.extend(messages);
-        self.get_cd_mut().text_messages.warnings.extend(warnings);
-        self.get_cd_mut().text_messages.errors.extend(errors);
+        let messages = self.get_cd_mut().excluded_items.set_excluded_items(excluded_items);
+        self.get_cd_mut().text_messages.extend_with_another_messages(messages);
     }
 
-    fn optimize_dirs_before_start(&mut self) {
+    fn prepare_items(&mut self) {
         let recursive_search = self.get_cd().recursive_search;
+        // Optimizes directories and removes recursive calls
         let messages = self.get_cd_mut().directories.optimize_directories(recursive_search);
         self.get_cd_mut().text_messages.extend_with_another_messages(messages);
     }
@@ -188,7 +192,7 @@ pub trait CommonData {
         println!("---------------DEBUG PRINT COMMON---------------");
         println!("Tool type: {:?}", self.get_cd().tool_type);
         println!("Directories: {:?}", self.get_cd().directories);
-        println!("Allowed extensions: {:?}", self.get_cd().allowed_extensions);
+        println!("Extensions: {:?}", self.get_cd().extensions);
         println!("Excluded items: {:?}", self.get_cd().excluded_items);
         println!("Recursive search: {:?}", self.get_cd().recursive_search);
         println!("Maximal file size: {:?}", self.get_cd().maximal_file_size);

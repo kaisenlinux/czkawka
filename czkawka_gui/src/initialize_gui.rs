@@ -497,9 +497,9 @@ fn show_preview(
 
             let is_heic;
             if let Some(extension) = Path::new(&name).extension() {
-                let extension = format!(".{}", extension.to_string_lossy().to_lowercase());
-                is_heic = HEIC_EXTENSIONS.contains(&extension.as_str());
-                if !RAW_IMAGE_EXTENSIONS.contains(&extension.as_str()) && !IMAGE_RS_EXTENSIONS.contains(&extension.as_str()) && !is_heic {
+                let extension_lowercase = extension.to_string_lossy().to_lowercase();
+                is_heic = HEIC_EXTENSIONS.contains(&extension_lowercase.as_str());
+                if !RAW_IMAGE_EXTENSIONS.contains(&extension_lowercase.as_str()) && !IMAGE_RS_EXTENSIONS.contains(&extension_lowercase.as_str()) && !is_heic {
                     break 'dir;
                 }
             } else {
@@ -510,14 +510,7 @@ fn show_preview(
                 let image = match get_dynamic_image_from_heic(file_name) {
                     Ok(t) => t,
                     Err(e) => {
-                        add_text_to_text_view(
-                            text_view_errors,
-                            flg!(
-                                "preview_image_opening_failure",
-                                generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", e.to_string())])
-                            )
-                            .as_str(),
-                        );
+                        add_text_to_text_view(text_view_errors, flg!("preview_image_opening_failure", name = file_name, reason = e.to_string()).as_str());
                         break 'dir;
                     }
                 };
@@ -526,14 +519,7 @@ fn show_preview(
                 match get_pixbuf_from_dynamic_image(&image) {
                     Ok(t) => t,
                     Err(e) => {
-                        add_text_to_text_view(
-                            text_view_errors,
-                            flg!(
-                                "preview_image_opening_failure",
-                                generate_translation_hashmap(vec![("name", file_name.to_string()), ("reason", e.to_string())])
-                            )
-                            .as_str(),
-                        );
+                        add_text_to_text_view(text_view_errors, flg!("preview_image_opening_failure", name = file_name, reason = e.to_string()).as_str());
                         break 'dir;
                     }
                 }
@@ -559,10 +545,7 @@ fn show_preview(
 
             pixbuf = match resize_pixbuf_dimension(&pixbuf, (800, 800), InterpType::Bilinear) {
                 None => {
-                    add_text_to_text_view(
-                        text_view_errors,
-                        flg!("preview_image_resize_failure", generate_translation_hashmap(vec![("name", file_name.to_string())])).as_str(),
-                    );
+                    add_text_to_text_view(text_view_errors, flg!("preview_image_resize_failure", name = file_name).as_str());
                     break 'dir;
                 }
                 Some(pixbuf) => pixbuf,

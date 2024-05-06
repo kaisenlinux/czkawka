@@ -1,3 +1,41 @@
+## Version 7.0.0 - 19.02.2024r
+### BREAKING CHANGES
+- Reducing size of cache files, made old cache files incompatible with new version
+- `-C` in CLI now saves as compact json
+
+### GTK GUI
+- Added drag&drop support for included/excluded folders - [#1106](https://github.com/qarmin/czkawka/pull/1106)
+- Added information where are saved scan results - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+
+### CLI
+- Providing full static rust binary with [Eyra](https://github.com/sunfishcode/eyra) - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+- Fixed duplicated `-c` argument, now saving as compact json is handled via `-C` - [#1153](https://github.com/qarmin/czkawka/pull/1153)
+- Added scan progress bar - [#1183](https://github.com/qarmin/czkawka/pull/1183)
+- Clean and safe cancelling of scan - [#1183](https://github.com/qarmin/czkawka/pull/1183)
+- Unification of CLI arguments - [#1183](https://github.com/qarmin/czkawka/pull/1183)
+- Hardlink support for similar images/videos - [#1201](https://github.com/qarmin/czkawka/pull/1201)
+
+### Krokiet GUI
+- Initial release of new gui - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+
+### Core
+- Using normal crossbeam channels instead of asyncio tokio channel - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+- Fixed tool type when using progress of empty directories - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+- Fixed missing json support when saving size and name duplicate results - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+- Fix cross-compiled debug windows build - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+- Added bigger stack size by default(fixes stack overflow in some musl apps) - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+- Added optional libraw dependency(better single-core performance and support more raw files) - [#1102](https://github.com/qarmin/czkawka/pull/1102)
+- Speedup checking for wildcards and fix invalid recognizing long excluded items - [#1152](https://github.com/qarmin/czkawka/pull/1152)
+- Big speedup when searching for empty folders(especially with multithreading + cached FS schema)  - [#1152](https://github.com/qarmin/czkawka/pull/1152)
+- Collecting files for scan can be a lot of faster due lazy file metadata gathering - [#1152](https://github.com/qarmin/czkawka/pull/1152)
+- Fixed recognizing not accessible folders as non-empty - [#1152](https://github.com/qarmin/czkawka/pull/1152)
+- Unifying code for collecting files to scan - [#1159](https://github.com/qarmin/czkawka/pull/1159)
+- Decrease memory usage when collecting files by removing unused fields in custom file entries structs - [#1159](https://github.com/qarmin/czkawka/pull/1159)
+- Decrease a little size of cache by few percents and improve loading/saving speed - [#1159](https://github.com/qarmin/czkawka/pull/1159)
+- Added ability to remove from scan files with excluded extensions - [#1184](https://github.com/qarmin/czkawka/pull/1102)
+- Fixed not showing in similar images results, files with same hashes when using reference folders - [#1184](https://github.com/qarmin/czkawka/pull/1102)
+- Optimize release binaries with LTO(~25/50% smaller, ~5/10% faster) - [#1184](https://github.com/qarmin/czkawka/pull/1102)
+
 ## Version 6.1.0 - 15.10.2023r
 - BREAKING CHANGE - Changed cache saving method, deduplicated, optimized and simplified procedure(all files needs to be hashed again) - [#1072](https://github.com/qarmin/czkawka/pull/1072), [#1086](https://github.com/qarmin/czkawka/pull/1086)
 - Remove up to 340ms of delay when waiting for results - [#1070](https://github.com/qarmin/czkawka/pull/1070)
@@ -145,7 +183,7 @@
 ## Version 3.2.0 - 07.08.2021r
 - Use checkbox instead selection to select files [#392](https://github.com/qarmin/czkawka/pull/392)
 - Re-enable hardlink on windows - [#410](https://github.com/qarmin/czkawka/pull/410)
-- Fix symlink and harlink creating - [#409](https://github.com/qarmin/czkawka/pull/409)
+- Fix symlink and hardlink creating - [#409](https://github.com/qarmin/czkawka/pull/409)
 - Add image preview to duplicate finder [#408](https://github.com/qarmin/czkawka/pull/408)
 - Add setting maximum file size [#407](https://github.com/qarmin/czkawka/pull/407)
 - Add new grouping algorithm to similar images [#405](https://github.com/qarmin/czkawka/pull/405)

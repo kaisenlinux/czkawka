@@ -1,8 +1,9 @@
-use fun_time::fun_time;
-use serde::Serialize;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+
+use fun_time::fun_time;
+use serde::Serialize;
 
 pub trait DebugPrint {
     fn debug_print(&self);
@@ -35,7 +36,7 @@ pub trait PrintResults {
 
     fn save_results_to_file_as_json(&self, file_name: &str, pretty_print: bool) -> std::io::Result<()>;
 
-    fn save_results_to_file_as_json_internal<T: Serialize>(&self, file_name: &str, item_to_serialize: &T, pretty_print: bool) -> std::io::Result<()> {
+    fn save_results_to_file_as_json_internal<T: Serialize + std::fmt::Debug>(&self, file_name: &str, item_to_serialize: &T, pretty_print: bool) -> std::io::Result<()> {
         if pretty_print {
             self.save_results_to_file_as_json_pretty(file_name, item_to_serialize)
         } else {
@@ -44,7 +45,7 @@ pub trait PrintResults {
     }
 
     #[fun_time(message = "save_results_to_file_as_json_pretty", level = "debug")]
-    fn save_results_to_file_as_json_pretty<T: Serialize>(&self, file_name: &str, item_to_serialize: &T) -> std::io::Result<()> {
+    fn save_results_to_file_as_json_pretty<T: Serialize + std::fmt::Debug>(&self, file_name: &str, item_to_serialize: &T) -> std::io::Result<()> {
         let file_handler = File::create(file_name)?;
         let mut writer = BufWriter::new(file_handler);
         serde_json::to_writer_pretty(&mut writer, item_to_serialize)?;
@@ -52,7 +53,7 @@ pub trait PrintResults {
     }
 
     #[fun_time(message = "save_results_to_file_as_json_compact", level = "debug")]
-    fn save_results_to_file_as_json_compact<T: Serialize>(&self, file_name: &str, item_to_serialize: &T) -> std::io::Result<()> {
+    fn save_results_to_file_as_json_compact<T: Serialize + std::fmt::Debug>(&self, file_name: &str, item_to_serialize: &T) -> std::io::Result<()> {
         let file_handler = File::create(file_name)?;
         let mut writer = BufWriter::new(file_handler);
         serde_json::to_writer(&mut writer, item_to_serialize)?;

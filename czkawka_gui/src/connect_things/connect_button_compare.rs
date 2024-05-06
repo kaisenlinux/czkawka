@@ -15,7 +15,6 @@ use crate::gui_structs::gui_data::GuiData;
 use crate::help_functions::{
     count_number_of_groups, get_all_direct_children, get_full_name_from_path_name, get_max_file_name, get_pixbuf_from_dynamic_image, resize_pixbuf_dimension,
 };
-use crate::localizer_core::generate_translation_hashmap;
 use crate::notebook_info::{NotebookObject, NOTEBOOKS_INFO};
 
 const BIG_PREVIEW_SIZE: i32 = 600;
@@ -303,11 +302,9 @@ fn populate_groups_at_start(
     label_group_info.set_text(
         flg!(
             "compare_groups_number",
-            generate_translation_hashmap(vec![
-                ("current_group", current_group.to_string()),
-                ("all_groups", group_number.to_string()),
-                ("images_in_group", cache_all_images.len().to_string())
-            ])
+            current_group = current_group,
+            all_groups = group_number,
+            images_in_group = cache_all_images.len()
         )
         .as_str(),
     );
@@ -353,8 +350,11 @@ fn generate_cache_for_results(vector_with_path: Vec<(String, String, TreePath)>)
         let big_img = Image::new();
 
         let mut pixbuf = get_pixbuf_from_dynamic_image(&DynamicImage::new_rgb8(1, 1)).unwrap();
-        let name_lowercase = name.to_lowercase();
-        let is_heic = HEIC_EXTENSIONS.iter().any(|extension| name_lowercase.ends_with(extension));
+        let extension_lowercase = full_path.split('.').last().map(str::to_lowercase);
+        let is_heic = match extension_lowercase {
+            Some(extension) => HEIC_EXTENSIONS.iter().any(|e| e == &extension),
+            None => false,
+        };
 
         if is_heic {
             #[allow(clippy::never_loop)]

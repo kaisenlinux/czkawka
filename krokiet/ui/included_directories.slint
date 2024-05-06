@@ -1,0 +1,122 @@
+
+import {Button, StandardListView, VerticalBox, ListView, ScrollView, TextEdit, CheckBox} from "std-widgets.slint";
+import {Callabler} from "callabler.slint";
+import {IncludedDirectoriesModel, ExcludedDirectoriesModel} from "common.slint";
+import {ColorPalette} from "color_palette.slint";
+import {Settings} from "settings.slint";
+
+export component IncludedDirectories {
+    in-out property <[IncludedDirectoriesModel]> model <=> Settings.included_directories_model;
+    in-out property <int> current_index <=> Settings.included_directories_model_selected_idx;
+
+    in-out property <length> size_referenced_folder: 33px;
+    
+    min-width: 50px;
+    VerticalLayout {
+        HorizontalLayout {
+            spacing: 5px;
+            Text {
+                text: "Ref";
+                width: size_referenced_folder;
+                horizontal-alignment: center;
+            }
+            Text{
+                horizontal-stretch: 1.0;
+                text: "Path";
+            }
+        }
+        ListView {
+            for r[idx] in model : Rectangle {
+                height: 30px;
+                border_radius: 5px;
+                width: parent.width;
+
+                background: touch-area.has-hover ? (r.selected_row ? ColorPalette.list-view-normal-selected-header : ColorPalette.list_view_normal_color) : (r.selected_row ? ColorPalette.list-view-normal-selected-header : ColorPalette.list_view_normal_color);
+                touch_area := TouchArea {
+                    clicked => {
+                        if (current_index == -1) {
+                            r.selected_row = true;
+                        } else {
+                            if (current_index != idx) {
+                                model[current_index].selected_row = false;
+                            }
+                            r.selected_row = true;
+                        }
+                        current_index = idx;
+                    }
+                    double-clicked => {
+                        Callabler.item_opened(r.path);
+                    }
+                }
+                
+                HorizontalLayout {
+                    spacing: 5px;
+                    width: parent.width;
+
+                    CheckBox {
+                        checked: r.referenced_folder;
+                        toggled => {
+                            model[idx].referenced_folder = self.checked;
+                        }
+                        width: size_referenced_folder;
+                    }
+                    Text {
+                        horizontal-stretch: 1.0;
+                        text: r.path;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component ExcludedDirectories {
+    in-out property <[ExcludedDirectoriesModel]> model <=> Settings.excluded_directories_model;
+    in-out property <int> current_index <=> Settings.excluded_directories_model_selected_idx;
+
+    min-width: 50px;
+    VerticalLayout {
+        HorizontalLayout {
+            spacing: 5px;
+            padding-left: 5px;
+            Text {
+                text: "Path";
+            }
+        }
+        ListView {
+            for r[idx] in model : Rectangle {
+                height: 30px;
+                border_radius: 5px;
+                width: parent.width;
+
+                background: touch-area.has-hover ? (r.selected_row ? ColorPalette.list-view-normal-selected-header : ColorPalette.list_view_normal_color) : (r.selected_row ? ColorPalette.list-view-normal-selected-header : ColorPalette.list_view_normal_color);
+
+                touch_area := TouchArea {
+                    clicked => {
+                        if (current_index == -1) {
+                            r.selected_row = true;
+                        } else {
+                            if (current_index != idx) {
+                                model[current_index].selected_row = false;
+                            }
+                            r.selected_row = true;
+                        }
+                        current_index = idx;
+                    }
+                    double-clicked => {
+                        Callabler.item_opened(r.path);
+                    }
+                }
+                
+                Text {
+                    x: 5px;
+                    width: parent.width;
+                    height: parent.height;
+                    text: r.path;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

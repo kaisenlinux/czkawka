@@ -1,0 +1,213 @@
+import { Button, VerticalBox ,TextEdit, HorizontalBox, TabWidget, ListView, StandardListView, StandardTableView, CheckBox, LineEdit} from "std-widgets.slint";
+import {SelectableTableView} from "selectable_tree_view.slint";
+import {LeftSidePanel} from "left_side_panel.slint";
+import {MainList} from "main_lists.slint";
+import {CurrentTab, ProgressToSend} from "common.slint";
+import { ActionButtons } from "action_buttons.slint";
+import { Progress } from "progress.slint";
+import {MainListModel} from "common.slint";
+import {Settings} from "settings.slint";
+import {Callabler} from "callabler.slint";
+import { BottomPanel } from "bottom_panel.slint";
+import {ColorPalette} from "color_palette.slint";
+import {GuiState} from "gui_state.slint";
+import { Preview } from "preview.slint";
+import {PopupNewDirectories} from "popup_new_directories.slint";
+import {PopupDelete} from "popup_delete.slint";
+import {PopupMoveFolders} from "popup_move_folders.slint";
+import { PopupSelectResults } from "popup_select_results.slint";
+import { ToolSettings } from "tool_settings.slint";
+
+export {Settings, Callabler, GuiState}
+
+export component MainWindow inherits Window {
+    callback scan_stopping;
+    callback scan_starting(CurrentTab);
+    callback folder_choose_requested(bool);
+    callback scan_ended(string);
+    callback show_move_folders_dialog(string);
+    callback folders_move_choose_requested();
+
+    title: "Krokiet - Data Cleaner";
+
+    min-width: 300px;
+    preferred-width: 800px;
+    min-height: 300px;
+    preferred-height: 600px;
+    
+    in-out property <string> text_summary_text: "";
+    in-out property <bool> stop_requested: false;
+    in-out property <bool> scanning: false;
+    in-out property <ProgressToSend> progress_datas: {
+        current_progress: 15,
+        all_progress: 20,
+        step_name: "Cache",
+    };
+    in-out property <[MainListModel]> duplicate_files_model: [];
+    in-out property <[MainListModel]> empty_folder_model: [];
+    in-out property <[MainListModel]> big_files_model: [];
+    in-out property <[MainListModel]> empty_files_model: [];
+    in-out property <[MainListModel]> temporary-files_model: [];
+    in-out property <[MainListModel]> similar_images_model: [];
+    in-out property <[MainListModel]> similar_videos_model: [];
+    in-out property <[MainListModel]> similar_music_model: [];
+    in-out property <[MainListModel]> invalid_symlinks_model: [];
+    in-out property <[MainListModel]> broken_files_model: [];
+    in-out property <[MainListModel]> bad_extensions_model: [];
+
+    VerticalBox {
+        HorizontalBox {
+            vertical-stretch: 1.0;
+            preferred-height: 300px;
+            LeftSidePanel {
+                horizontal-stretch: 0.0;
+                scanning <=> root.scanning;
+                changed_current_tab() => {
+                    GuiState.preview_visible = false;
+                    main_list.changed_current_tab();
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1.0;
+                min_width: 300px;
+                Rectangle {
+                    vertical-stretch: 1.0;
+                    main_list := MainList {
+                        x: 0;
+                        width: preview_or_tool_settings.visible ? parent.width / 2 : parent.width;
+                        height: parent.height;
+                        horizontal-stretch: 0.5;
+                        duplicate_files_model <=> root.duplicate_files_model;
+                        empty_folder_model <=> root.empty_folder_model;
+                        big_files_model <=> root.big_files_model;
+                        empty_files_model <=> root.empty_files_model;
+                        temporary-files_model <=> root.temporary-files_model;
+                        similar_images_model <=> root.similar_images_model;
+                        similar_videos_model <=> root.similar_videos_model;
+                        similar_music_model <=> root.similar_music_model;
+                        invalid_symlinks_model <=> root.invalid_symlinks_model;
+                        broken_files_model <=> root.broken_files_model;
+                        bad_extensions_model <=> root.bad_extensions_model;
+                    }
+                    preview_or_tool_settings := Rectangle {
+                        visible: (GuiState.preview_visible || tool_settings.visible) && GuiState.is_tool_tab_active;
+                        height: parent.height;
+                        x: parent.width / 2;
+                        width: self.visible ? parent.width / 2 : 0;
+                        Preview {
+                            height: parent.height;
+                            width: parent.width;
+                            visible: GuiState.preview_visible && !tool_settings.visible;
+                            source: GuiState.preview_image;
+                            image-fit: ImageFit.contain;
+                        }
+                        tool_settings := ToolSettings {
+                            height: parent.height;
+                            width: parent.width;
+                            visible: GuiState.visible_tool_settings && GuiState.available_subsettings;
+                        }
+                    }
+                }
+
+                if root.scanning: Progress {
+                    horizontal-stretch: 0.0;
+                    progress_datas <=> root.progress_datas;
+                }
+            }
+        }
+
+        action_buttons := ActionButtons {
+            vertical-stretch: 0.0;
+            scanning <=> root.scanning;
+            stop_requested <=> root.stop-requested;
+            scan_stopping => {
+                text_summary_text = "Stopping scan, please wait...";
+                root.scan_stopping();
+            }
+            scan_starting(item) => {
+                text_summary_text = "Searching...";
+                root.scan_starting(item);
+            }
+            show_select_popup(x_offset, y_offset) => {
+                select_popup_window.x_offset = x_offset;
+                select_popup_window.y_offset = y_offset;
+                select_popup_window.show_popup();
+            }
+            request_folder_to_move => {
+                folders_move_choose_requested();
+            }
+            show_remove_popup => {
+                delete_popup_window.show_popup();
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 5px;
+            text_summary := LineEdit {
+                text: text_summary_text;
+                read-only: true;
+            }
+            Text {
+                text: "Krokiet\n7.0.0";
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+
+        bottom_panel := BottomPanel {
+            bottom-panel-visibility <=> action_buttons.bottom_panel_visibility;
+            vertical-stretch: 0.0;
+            folder_choose_requested(included_directories) => {
+                root.folder_choose_requested(included_directories)
+            }
+            show_manual_add_dialog(included_directories) => {
+                GuiState.choosing_include_directories = included_directories;
+                new_directory_popup_window.show_popup()
+            }
+        }
+    }
+
+    new_directory_popup_window := PopupNewDirectories {
+        height: root.height;
+        width: root.width;
+    }
+
+    select_popup_window := PopupSelectResults {
+        property <length> x_offset: 0;
+        property <length> y_offset: 0;
+        
+        x: parent.x + x_offset - self.item_width / 2.0;
+        y: parent.y + y_offset - self.all_items_height - 5px;
+        
+        height: root.height;
+        width: root.width;
+    }
+
+    delete_popup_window := PopupDelete {
+        height: root.height;
+        width: root.width;
+
+        x: parent.x + (root.width - self.popup_width) / 2.0;
+        y: parent.y + (parent.height - self.popup_height) / 2.0;
+    }
+
+    move_popup_window := PopupMoveFolders {
+        height: root.height;
+        width: root.width;
+
+        x: parent.x + (root.width - self.popup_width) / 2.0;
+        y: parent.y + (parent.height - self.popup_height) / 2.0;
+    }
+
+    show_move_folders_dialog(folder_name) => {
+        move_popup_window.folder_name = folder_name;
+        move_popup_window.show_popup();
+    }
+
+    scan_ended(scan_text) => {
+        text_summary_text = scan_text;
+        root.scanning = false;
+        root.stop_requested = false;
+    }
+}

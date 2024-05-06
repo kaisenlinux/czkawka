@@ -1,30 +1,37 @@
+#![allow(unused_imports)]
+
+use std::{fs, thread};
+// I don't wanna fight with unused imports in this file, so simply ignore it to avoid too much complexity
+use std::cmp::Ordering;
 use std::ffi::OsString;
 use std::fs::{DirEntry, File, OpenOptions};
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::{atomic, Arc};
 use std::thread::{sleep, JoinHandle};
-use std::time::{Duration, SystemTime};
-use std::{fs, thread};
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(feature = "heif")]
 use anyhow::Result;
+use crossbeam_channel::Sender;
 use directories_next::ProjectDirs;
 use fun_time::fun_time;
-use futures::channel::mpsc::UnboundedSender;
 use handsome_logger::{ColorChoice, ConfigBuilder, TerminalMode};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use imagepipe::{ImageSource, Pipeline};
 #[cfg(feature = "heif")]
 use libheif_rs::{ColorSpace, HeifContext, RgbChroma};
-use log::{info, LevelFilter, Record};
+#[cfg(feature = "libraw")]
+use libraw::Processor;
+use log::{debug, error, info, warn, LevelFilter, Record};
+use rawloader::RawLoader;
+use symphonia::core::conv::IntoSample;
 
 // #[cfg(feature = "heif")]
 // use libheif_rs::LibHeif;
 use crate::common_dir_traversal::{CheckingMethod, ProgressData, ToolType};
 use crate::common_directory::Directories;
-use crate::common_items::ExcludedItems;
+use crate::common_items::{ExcludedItems, SingleExcludedItem};
 use crate::common_messages::Messages;
 use crate::common_tool::DeleteMethod;
 use crate::common_traits::ResultEntry;
@@ -32,19 +39,22 @@ use crate::duplicate::make_hard_link;
 use crate::CZKAWKA_VERSION;
 
 static NUMBER_OF_THREADS: state::InitCell<usize> = state::InitCell::new();
+static ALL_AVAILABLE_THREADS: state::InitCell<usize> = state::InitCell::new();
+pub const DEFAULT_THREAD_SIZE: usize = 8 * 1024 * 1024; // 8 MB
+pub const DEFAULT_WORKER_THREAD_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 
 pub fn get_number_of_threads() -> usize {
     let data = NUMBER_OF_THREADS.get();
     if *data >= 1 {
         *data
     } else {
-        get_default_number_of_threads()
+        get_all_available_threads()
     }
 }
 
 fn filtering_messages(record: &Record) -> bool {
     if let Some(module_path) = record.module_path() {
-        module_path.starts_with("czkawka")
+        module_path.starts_with("czkawka") || module_path.starts_with("krokiet")
     } else {
         true
     }
@@ -57,59 +67,131 @@ pub fn setup_logger(disabled_printing: bool) {
     handsome_logger::TermLogger::init(config, TerminalMode::Mixed, ColorChoice::Always).unwrap();
 }
 
+pub fn get_all_available_threads() -> usize {
+    *ALL_AVAILABLE_THREADS.get_or_init(|| {
+        let available_threads = thread::available_parallelism().map(std::num::NonZeroUsize::get).unwrap_or(1);
+        ALL_AVAILABLE_THREADS.set(available_threads);
+        available_threads
+    })
+}
+
 pub fn print_version_mode() {
+    let rust_version = env!("RUST_VERSION_INTERNAL");
+    let debug_release = if cfg!(debug_assertions) { "debug" } else { "release" };
+
+    let processors = get_all_available_threads();
+
+    let info = os_info::get();
     info!(
-        "Czkawka version: {}, was compiled with {} mode",
-        CZKAWKA_VERSION,
-        if cfg!(debug_assertions) { "debug" } else { "release" }
+        "App version: {CZKAWKA_VERSION}, {debug_release} mode, rust {rust_version}, os {} {} [{} {}], {processors} cpu/threads",
+        info.os_type(),
+        info.version(),
+        std::env::consts::ARCH,
+        info.bitness(),
     );
+    if cfg!(debug_assertions) {
+        warn!("You are running debug version of app which is a lot of slower than release version.");
+    }
+
+    if option_env!("USING_CRANELIFT").is_some() {
+        warn!("You are running app with cranelift which is intended only for fast compilation, not runtime performance.");
+    }
 }
 
 pub fn set_default_number_of_threads() {
-    set_number_of_threads(get_default_number_of_threads());
-}
-
-pub fn get_default_number_of_threads() -> usize {
-    thread::available_parallelism().map(std::num::NonZeroUsize::get).unwrap_or(1)
+    set_number_of_threads(get_all_available_threads());
 }
 
 pub fn set_number_of_threads(thread_number: usize) {
     NUMBER_OF_THREADS.set(thread_number);
 
-    rayon::ThreadPoolBuilder::new().num_threads(get_number_of_threads()).build_global().unwrap();
+    let additional_message = if thread_number == 0 {
+        " (0 - means that all available threads will be used)"
+    } else {
+        ""
+    };
+    debug!("Number of threads set to {thread_number}{additional_message}");
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(get_number_of_threads())
+        .stack_size(DEFAULT_WORKER_THREAD_SIZE)
+        .build_global()
+        .unwrap();
 }
 
 pub const RAW_IMAGE_EXTENSIONS: &[&str] = &[
-    ".mrw", ".arw", ".srf", ".sr2", ".mef", ".orf", ".srw", ".erf", ".kdc", ".kdc", ".dcs", ".rw2", ".raf", ".dcr", ".dng", ".pef", ".crw", ".iiq", ".3fr", ".nrw", ".nef", ".mos",
-    ".cr2", ".ari",
+    "mrw", "arw", "srf", "sr2", "mef", "orf", "srw", "erf", "kdc", "kdc", "dcs", "rw2", "raf", "dcr", "dng", "pef", "crw", "iiq", "3fr", "nrw", "nef", "mos", "cr2", "ari",
 ];
-pub const IMAGE_RS_EXTENSIONS: &[&str] = &[
-    ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".webp", ".gif", ".ico", ".exr", ".qoi",
-];
+pub const IMAGE_RS_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "tiff", "tif", "tga", "ff", "jif", "jfi", "webp", "gif", "ico", "exr", "qoi"];
 
-pub const IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".bmp", ".webp", ".exr", ".qoi"];
+pub const IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "tiff", "tif", "tga", "ff", "jif", "jfi", "bmp", "webp", "exr", "qoi"];
 
 pub const IMAGE_RS_BROKEN_FILES_EXTENSIONS: &[&str] = &[
-    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".tga", ".ff", ".jif", ".jfi", ".gif", ".bmp", ".ico", ".jfif", ".jpe", ".pnz", ".dib", ".webp", ".exr",
+    "jpg", "jpeg", "png", "tiff", "tif", "tga", "ff", "jif", "jfi", "gif", "bmp", "ico", "jfif", "jpe", "pnz", "dib", "webp", "exr",
 ];
-pub const HEIC_EXTENSIONS: &[&str] = &[".heif", ".heifs", ".heic", ".heics", ".avci", ".avcs", ".avifs"];
+pub const HEIC_EXTENSIONS: &[&str] = &["heif", "heifs", "heic", "heics", "avci", "avcs", "avifs"];
 
-pub const ZIP_FILES_EXTENSIONS: &[&str] = &[".zip", ".jar"];
+pub const ZIP_FILES_EXTENSIONS: &[&str] = &["zip", "jar"];
 
-pub const PDF_FILES_EXTENSIONS: &[&str] = &[".pdf"];
+pub const PDF_FILES_EXTENSIONS: &[&str] = &["pdf"];
 
 pub const AUDIO_FILES_EXTENSIONS: &[&str] = &[
-    ".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".aiff", ".pcm", ".aif", ".aiff", ".aifc", ".m3a", ".mp2", ".mp4a", ".mp2a", ".mpga", ".wave", ".weba", ".wma", ".oga",
+    "mp3", "flac", "wav", "ogg", "m4a", "aac", "aiff", "pcm", "aif", "aiff", "aifc", "m3a", "mp2", "mp4a", "mp2a", "mpga", "wave", "weba", "wma", "oga",
 ];
 
 pub const VIDEO_FILES_EXTENSIONS: &[&str] = &[
-    ".mp4", ".mpv", ".flv", ".mp4a", ".webm", ".mpg", ".mp2", ".mpeg", ".m4p", ".m4v", ".avi", ".wmv", ".qt", ".mov", ".swf", ".mkv",
+    "mp4", "mpv", "flv", "mp4a", "webm", "mpg", "mp2", "mpeg", "m4p", "m4v", "avi", "wmv", "qt", "mov", "swf", "mkv",
 ];
 
 pub const LOOP_DURATION: u32 = 20; //ms
 pub const SEND_PROGRESS_DATA_TIME_BETWEEN: u32 = 200; //ms
 
-pub struct Common();
+pub fn remove_folder_if_contains_only_empty_folders(path: impl AsRef<Path>, remove_to_trash: bool) -> Result<(), String> {
+    let path = path.as_ref();
+    if !path.is_dir() {
+        return Err(format!("Trying to remove folder {path:?} which is not a directory",));
+    }
+
+    let mut entries_to_check = Vec::new();
+    let Ok(initial_entry) = path.read_dir() else {
+        return Err(format!("Cannot read directory {path:?}",));
+    };
+    for entry in initial_entry {
+        if let Ok(entry) = entry {
+            entries_to_check.push(entry);
+        } else {
+            return Err(format!("Cannot read entry from directory {path:?}"));
+        }
+    }
+    loop {
+        let Some(entry) = entries_to_check.pop() else {
+            break;
+        };
+        let Some(file_type) = entry.file_type().ok() else {
+            return Err(format!("Folder contains file with unknown type {:?} inside {path:?}", entry.path()));
+        };
+
+        if !file_type.is_dir() {
+            return Err(format!("Folder contains file {:?} inside {path:?}", entry.path(),));
+        }
+        let Ok(internal_read_dir) = entry.path().read_dir() else {
+            return Err(format!("Cannot read directory {:?} inside {path:?}", entry.path()));
+        };
+        for internal_elements in internal_read_dir {
+            if let Ok(internal_element) = internal_elements {
+                entries_to_check.push(internal_element);
+            } else {
+                return Err(format!("Cannot read entry from directory {:?} inside {path:?}", entry.path()));
+            }
+        }
+    }
+
+    if remove_to_trash {
+        trash::delete(path).map_err(|e| format!("Cannot move folder {path:?} to trash, reason {e}"))
+    } else {
+        fs::remove_dir_all(path).map_err(|e| format!("Cannot remove directory {path:?}, reason {e}"))
+    }
+}
 
 pub fn open_cache_folder(cache_file_name: &str, save_to_cache: bool, use_json: bool, warnings: &mut Vec<String>) -> Option<((Option<File>, PathBuf), (Option<File>, PathBuf))> {
     if let Some(proj_dirs) = ProjectDirs::from("pl", "Qarmin", "Czkawka") {
@@ -123,18 +205,18 @@ pub fn open_cache_folder(cache_file_name: &str, save_to_cache: bool, use_json: b
         if save_to_cache {
             if cache_dir.exists() {
                 if !cache_dir.is_dir() {
-                    warnings.push(format!("Config dir {} is a file!", cache_dir.display()));
+                    warnings.push(format!("Config dir {cache_dir:?} is a file!"));
                     return None;
                 }
             } else if let Err(e) = fs::create_dir_all(&cache_dir) {
-                warnings.push(format!("Cannot create config dir {}, reason {}", cache_dir.display(), e));
+                warnings.push(format!("Cannot create config dir {cache_dir:?}, reason {e}"));
                 return None;
             }
 
             file_handler_default = Some(match OpenOptions::new().truncate(true).write(true).create(true).open(&cache_file) {
                 Ok(t) => t,
                 Err(e) => {
-                    warnings.push(format!("Cannot create or open cache file {}, reason {}", cache_file.display(), e));
+                    warnings.push(format!("Cannot create or open cache file {cache_file:?}, reason {e}"));
                     return None;
                 }
             });
@@ -142,7 +224,7 @@ pub fn open_cache_folder(cache_file_name: &str, save_to_cache: bool, use_json: b
                 file_handler_json = Some(match OpenOptions::new().truncate(true).write(true).create(true).open(&cache_file_json) {
                     Ok(t) => t,
                     Err(e) => {
-                        warnings.push(format!("Cannot create or open cache file {}, reason {}", cache_file_json.display(), e));
+                        warnings.push(format!("Cannot create or open cache file {cache_file_json:?}, reason {e}"));
                         return None;
                     }
                 });
@@ -152,12 +234,9 @@ pub fn open_cache_folder(cache_file_name: &str, save_to_cache: bool, use_json: b
                 file_handler_default = Some(t);
             } else {
                 if use_json {
-                    file_handler_json = Some(match OpenOptions::new().read(true).open(&cache_file_json) {
-                        Ok(t) => t,
-                        Err(_) => return None,
-                    });
+                    file_handler_json = Some(OpenOptions::new().read(true).open(&cache_file_json).ok()?);
                 } else {
-                    // messages.push(format!("Cannot find or open cache file {}", cache_file.display())); // No error or warning
+                    // messages.push(format!("Cannot find or open cache file {cache_file:?}")); // No error or warning
                     return None;
                 }
             }
@@ -183,141 +262,147 @@ pub fn get_dynamic_image_from_heic(path: &str) -> Result<DynamicImage> {
         .ok_or_else(|| anyhow::anyhow!("Failed to create image buffer"))
 }
 
-pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path> + std::fmt::Debug) -> Option<DynamicImage> {
-    let file_handler = match OpenOptions::new().read(true).open(&path) {
-        Ok(t) => t,
-        Err(_e) => {
-            return None;
-        }
-    };
+#[cfg(feature = "libraw")]
+pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path>) -> Option<DynamicImage> {
+    let buf = fs::read(path.as_ref()).ok()?;
 
-    let mut reader = BufReader::new(file_handler);
-    let raw = match rawloader::decode(&mut reader) {
-        Ok(raw) => raw,
-        Err(_e) => {
-            return None;
-        }
-    };
+    let processor = Processor::new();
+    let start_timer = Instant::now();
+    let processed = processor.process_8bit(&buf).expect("processing successful");
+    println!("Processing took {:?}", start_timer.elapsed());
+
+    let width = processed.width();
+    let height = processed.height();
+
+    let data = processed.to_vec();
+
+    let buffer = ImageBuffer::from_raw(width, height, data)?;
+    // Utwórz DynamicImage z ImageBuffer
+    Some(DynamicImage::ImageRgb8(buffer))
+}
+
+#[cfg(not(feature = "libraw"))]
+pub fn get_dynamic_image_from_raw_image(path: impl AsRef<Path> + std::fmt::Debug) -> Option<DynamicImage> {
+    let mut start_timer = Instant::now();
+    let mut times = Vec::new();
+
+    let loader = RawLoader::new();
+    let raw = loader.decode_file(path.as_ref()).ok()?;
+
+    times.push(("After decoding", start_timer.elapsed()));
+    start_timer = Instant::now();
 
     let source = ImageSource::Raw(raw);
 
-    let mut pipeline = match Pipeline::new_from_source(source) {
-        Ok(pipeline) => pipeline,
-        Err(_e) => {
-            return None;
-        }
-    };
+    times.push(("After creating source", start_timer.elapsed()));
+    start_timer = Instant::now();
+
+    let mut pipeline = Pipeline::new_from_source(source).ok()?;
+
+    times.push(("After creating pipeline", start_timer.elapsed()));
+    start_timer = Instant::now();
 
     pipeline.run(None);
-    let image = match pipeline.output_8bit(None) {
-        Ok(image) => image,
-        Err(_e) => {
-            return None;
-        }
-    };
+    let image = pipeline.output_8bit(None).ok()?;
 
-    let Some(image) = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(image.width as u32, image.height as u32, image.data) else {
-        return None;
-    };
+    times.push(("After creating image", start_timer.elapsed()));
+    start_timer = Instant::now();
 
+    let image = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(image.width as u32, image.height as u32, image.data)?;
+
+    times.push(("After creating image buffer", start_timer.elapsed()));
+    start_timer = Instant::now();
     // println!("Properly hashed {:?}", path);
-    Some(DynamicImage::ImageRgb8(image))
+    let res = Some(DynamicImage::ImageRgb8(image));
+    times.push(("After creating dynamic image", start_timer.elapsed()));
+
+    let str_timer = times.into_iter().map(|(name, time)| format!("{name}: {time:?}")).collect::<Vec<_>>().join(", ");
+    debug!("Loading raw image --- {str_timer}");
+    res
 }
 
 pub fn split_path(path: &Path) -> (String, String) {
     match (path.parent(), path.file_name()) {
-        (Some(dir), Some(file)) => (dir.display().to_string(), file.to_string_lossy().into_owned()),
-        (Some(dir), None) => (dir.display().to_string(), String::new()),
+        (Some(dir), Some(file)) => (dir.to_string_lossy().to_string(), file.to_string_lossy().into_owned()),
+        (Some(dir), None) => (dir.to_string_lossy().to_string(), String::new()),
         (None, _) => (String::new(), String::new()),
     }
 }
 
-pub fn create_crash_message(library_name: &str, file_path: &str, home_library_url: &str) -> String {
-    format!("{library_name} library crashed when opening \"{file_path}\", please check if this is fixed with the latest version of {library_name} (e.g. with https://github.com/qarmin/crates_tester) and if it is not fixed, please report bug here - {home_library_url}")
+pub fn split_path_compare(path_a: &Path, path_b: &Path) -> Ordering {
+    match path_a.parent().cmp(&path_b.parent()) {
+        Ordering::Equal => path_a.file_name().cmp(&path_b.file_name()),
+        other => other,
+    }
 }
 
-impl Common {
-    pub fn regex_check(expression: &str, directory: impl AsRef<Path>) -> bool {
-        if expression == "*" {
-            return true;
-        }
+pub fn create_crash_message(library_name: &str, file_path: &str, home_library_url: &str) -> String {
+    format!("{library_name} library crashed when opening \"{file_path}\", please check if this is fixed with the latest version of {library_name} and if it is not fixed, please report bug here - {home_library_url}")
+}
 
-        let temp_splits: Vec<&str> = expression.split('*').collect();
-        let mut splits: Vec<&str> = Vec::new();
-        for i in temp_splits {
-            if !i.is_empty() {
-                splits.push(i);
-            }
-        }
-        if splits.is_empty() {
-            return false;
-        }
-
-        // Get rid of non unicode characters
-        let directory = directory.as_ref().to_string_lossy();
-
-        // Early checking if directory contains all parts needed by expression
-        for split in &splits {
-            if !directory.contains(split) {
-                return false;
-            }
-        }
-
-        let mut position_of_splits: Vec<usize> = Vec::new();
-
-        // `git*` shouldn't be true for `/gitsfafasfs`
-        if !expression.starts_with('*') && directory.find(splits[0]).unwrap() > 0 {
-            return false;
-        }
-        // `*home` shouldn't be true for `/homeowner`
-        if !expression.ends_with('*') && !directory.ends_with(splits.last().unwrap()) {
-            return false;
-        }
-
-        // At the end we check if parts between * are correctly positioned
-        position_of_splits.push(directory.find(splits[0]).unwrap());
-        let mut current_index: usize;
-        let mut found_index: usize;
-        for i in splits[1..].iter().enumerate() {
-            current_index = *position_of_splits.get(i.0).unwrap() + i.1.len();
-            found_index = match directory[current_index..].find(i.1) {
-                Some(t) => t,
-                None => return false,
-            };
-            position_of_splits.push(found_index + current_index);
-        }
-        true
+pub fn regex_check(expression_item: &SingleExcludedItem, directory_name: &str) -> bool {
+    if expression_item.expression_splits.is_empty() {
+        return true;
     }
 
-    pub fn normalize_windows_path(path_to_change: impl AsRef<Path>) -> PathBuf {
-        let path = path_to_change.as_ref();
-
-        // Don't do anything, because network path may be case intensive
-        if path.to_string_lossy().starts_with('\\') {
-            return path.to_path_buf();
+    // Early checking if directory contains all parts needed by expression
+    for split in &expression_item.unique_extensions_splits {
+        if !directory_name.contains(split) {
+            return false;
         }
+    }
 
-        match path.to_str() {
-            Some(path) if path.is_char_boundary(1) => {
-                let replaced = path.replace('/', "\\");
-                let mut new_path = OsString::new();
-                if replaced[1..].starts_with(':') {
-                    new_path.push(replaced[..1].to_ascii_uppercase());
-                    new_path.push(replaced[1..].to_ascii_lowercase());
-                } else {
-                    new_path.push(replaced.to_ascii_lowercase());
-                }
-                PathBuf::from(new_path)
+    // `git*` shouldn't be true for `/gitsfafasfs`
+    if !expression_item.expression.starts_with('*') && directory_name.find(&expression_item.expression_splits[0]).unwrap() > 0 {
+        return false;
+    }
+    // `*home` shouldn't be true for `/homeowner`
+    if !expression_item.expression.ends_with('*') && !directory_name.ends_with(expression_item.expression_splits.last().unwrap()) {
+        return false;
+    }
+
+    // At the end we check if parts between * are correctly positioned
+    let mut last_split_point = directory_name.find(&expression_item.expression_splits[0]).unwrap();
+    let mut current_index: usize = 0;
+    let mut found_index: usize;
+    for spl in &expression_item.expression_splits[1..] {
+        found_index = match directory_name[current_index..].find(spl) {
+            Some(t) => t,
+            None => return false,
+        };
+        current_index = last_split_point + spl.len();
+        last_split_point = found_index + current_index;
+    }
+    true
+}
+
+pub fn normalize_windows_path(path_to_change: impl AsRef<Path>) -> PathBuf {
+    let path = path_to_change.as_ref();
+
+    // Don't do anything, because network path may be case intensive
+    if path.to_string_lossy().starts_with('\\') {
+        return path.to_path_buf();
+    }
+
+    match path.to_str() {
+        Some(path) if path.is_char_boundary(1) => {
+            let replaced = path.replace('/', "\\");
+            let mut new_path = OsString::new();
+            if replaced[1..].starts_with(':') {
+                new_path.push(replaced[..1].to_ascii_uppercase());
+                new_path.push(replaced[1..].to_ascii_lowercase());
+            } else {
+                new_path.push(replaced.to_ascii_lowercase());
             }
-            _ => path.to_path_buf(),
+            PathBuf::from(new_path)
         }
+        _ => path.to_path_buf(),
     }
 }
 
 pub fn check_folder_children(
     dir_result: &mut Vec<PathBuf>,
     warnings: &mut Vec<String>,
-    current_folder: &Path,
     entry_data: &DirEntry,
     recursive_search: bool,
     directories: &Directories,
@@ -327,25 +412,25 @@ pub fn check_folder_children(
         return;
     }
 
-    let next_folder = current_folder.join(entry_data.file_name());
-    if directories.is_excluded(&next_folder) {
+    let next_item = entry_data.path();
+    if directories.is_excluded(&next_item) {
         return;
     }
 
-    if excluded_items.is_excluded(&next_folder) {
+    if excluded_items.is_excluded(&next_item) {
         return;
     }
 
     #[cfg(target_family = "unix")]
     if directories.exclude_other_filesystems() {
-        match directories.is_on_other_filesystems(&next_folder) {
+        match directories.is_on_other_filesystems(&next_item) {
             Ok(true) => return,
             Err(e) => warnings.push(e),
             _ => (),
         }
     }
 
-    dir_result.push(next_folder);
+    dir_result.push(next_item);
 }
 
 // Here we assume, that internal Vec<> have at least 1 object
@@ -376,7 +461,7 @@ where
                         infos.push(format!(
                             "dry_run - would create hardlink from {:?} to {:?}",
                             original_file.get_path(),
-                            original_file.get_path()
+                            file_entry.get_path()
                         ));
                     } else {
                         if dry_run {
@@ -414,7 +499,7 @@ where
                 if dry_run {
                     infos.push(format!("dry_run - would delete file: {:?}", i.get_path()));
                 } else {
-                    if let Err(e) = std::fs::remove_file(i.get_path()) {
+                    if let Err(e) = fs::remove_file(i.get_path()) {
                         errors.push(format!("Cannot delete file: {:?} - {e}", i.get_path()));
                         failed_to_remove_files += 1;
                     } else {
@@ -460,13 +545,14 @@ where
 }
 
 pub fn prepare_thread_handler_common(
-    progress_sender: Option<&UnboundedSender<ProgressData>>,
+    progress_sender: Option<&Sender<ProgressData>>,
     current_stage: u8,
     max_stage: u8,
     max_value: usize,
     checking_method: CheckingMethod,
     tool_type: ToolType,
 ) -> (JoinHandle<()>, Arc<AtomicBool>, Arc<AtomicUsize>, AtomicBool) {
+    assert_ne!(tool_type, ToolType::None, "ToolType::None should not exist");
     let progress_thread_run = Arc::new(AtomicBool::new(true));
     let atomic_counter = Arc::new(AtomicUsize::new(0));
     let check_was_stopped = AtomicBool::new(false);
@@ -475,23 +561,24 @@ pub fn prepare_thread_handler_common(
         let progress_thread_run = progress_thread_run.clone();
         let atomic_counter = atomic_counter.clone();
         thread::spawn(move || {
-            let mut time_since_last_send = SystemTime::now();
+            // Use earlier time, to send immediately first message
+            let mut time_since_last_send = SystemTime::now() - Duration::from_secs(10u64);
 
             loop {
                 if time_since_last_send.elapsed().unwrap().as_millis() > SEND_PROGRESS_DATA_TIME_BETWEEN as u128 {
                     progress_send
-                        .unbounded_send(ProgressData {
+                        .send(ProgressData {
                             checking_method,
                             current_stage,
                             max_stage,
-                            entries_checked: atomic_counter.load(Ordering::Relaxed),
+                            entries_checked: atomic_counter.load(atomic::Ordering::Relaxed),
                             entries_to_check: max_value,
                             tool_type,
                         })
                         .unwrap();
                     time_since_last_send = SystemTime::now();
                 }
-                if !progress_thread_run.load(Ordering::Relaxed) {
+                if !progress_thread_run.load(atomic::Ordering::Relaxed) {
                     break;
                 }
                 sleep(Duration::from_millis(LOOP_DURATION as u64));
@@ -515,51 +602,84 @@ pub fn check_if_stop_received(stop_receiver: Option<&crossbeam_channel::Receiver
 
 #[fun_time(message = "send_info_and_wait_for_ending_all_threads", level = "debug")]
 pub fn send_info_and_wait_for_ending_all_threads(progress_thread_run: &Arc<AtomicBool>, progress_thread_handle: JoinHandle<()>) {
-    progress_thread_run.store(false, Ordering::Relaxed);
+    progress_thread_run.store(false, atomic::Ordering::Relaxed);
     progress_thread_handle.join().unwrap();
 }
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::fs;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
 
-    use crate::common::Common;
+    use tempfile::tempdir;
+
+    use crate::common::{normalize_windows_path, regex_check, remove_folder_if_contains_only_empty_folders};
+    use crate::common_items::new_excluded_item;
+
+    #[test]
+    fn test_remove_folder_if_contains_only_empty_folders() {
+        let dir = tempdir().unwrap();
+        let sub_dir = dir.path().join("sub_dir");
+        fs::create_dir(&sub_dir).unwrap();
+
+        // Test with empty directory
+        assert!(remove_folder_if_contains_only_empty_folders(&sub_dir, false).is_ok());
+        assert!(!Path::new(&sub_dir).exists());
+
+        // Test with directory containing an empty directory
+        fs::create_dir(&sub_dir).unwrap();
+        fs::create_dir(sub_dir.join("empty_sub_dir")).unwrap();
+        assert!(remove_folder_if_contains_only_empty_folders(&sub_dir, false).is_ok());
+        assert!(!Path::new(&sub_dir).exists());
+
+        // Test with directory containing a file
+        fs::create_dir(&sub_dir).unwrap();
+        let mut file = fs::File::create(sub_dir.join("file.txt")).unwrap();
+        writeln!(file, "Hello, world!").unwrap();
+        assert!(remove_folder_if_contains_only_empty_folders(&sub_dir, false).is_err());
+        assert!(Path::new(&sub_dir).exists());
+    }
 
     #[test]
     fn test_regex() {
-        assert!(Common::regex_check("*home*", "/home/rafal"));
-        assert!(Common::regex_check("*home", "/home"));
-        assert!(Common::regex_check("*home/", "/home/"));
-        assert!(Common::regex_check("*home/*", "/home/"));
-        assert!(Common::regex_check("*.git*", "/home/.git"));
-        assert!(Common::regex_check("*/home/rafal*rafal*rafal*rafal*", "/home/rafal/rafalrafalrafal"));
-        assert!(Common::regex_check("AAA", "AAA"));
-        assert!(Common::regex_check("AAA*", "AAABDGG/QQPW*"));
-        assert!(!Common::regex_check("*home", "/home/"));
-        assert!(!Common::regex_check("*home", "/homefasfasfasfasf/"));
-        assert!(!Common::regex_check("*home", "/homefasfasfasfasf"));
-        assert!(!Common::regex_check("rafal*afal*fal", "rafal"));
-        assert!(!Common::regex_check("rafal*a", "rafal"));
-        assert!(!Common::regex_check("AAAAAAAA****", "/AAAAAAAAAAAAAAAAA"));
-        assert!(!Common::regex_check("*.git/*", "/home/.git"));
-        assert!(!Common::regex_check("*home/*koc", "/koc/home/"));
-        assert!(!Common::regex_check("*home/", "/home"));
-        assert!(!Common::regex_check("*TTT", "/GGG"));
+        assert!(regex_check(&new_excluded_item("*"), "/home/rafal"));
+        assert!(regex_check(&new_excluded_item("*home*"), "/home/rafal"));
+        assert!(regex_check(&new_excluded_item("*home"), "/home"));
+        assert!(regex_check(&new_excluded_item("*home/"), "/home/"));
+        assert!(regex_check(&new_excluded_item("*home/*"), "/home/"));
+        assert!(regex_check(&new_excluded_item("*.git*"), "/home/.git"));
+        assert!(regex_check(&new_excluded_item("*/home/rafal*rafal*rafal*rafal*"), "/home/rafal/rafalrafalrafal"));
+        assert!(regex_check(&new_excluded_item("AAA"), "AAA"));
+        assert!(regex_check(&new_excluded_item("AAA*"), "AAABDGG/QQPW*"));
+        assert!(!regex_check(&new_excluded_item("*home"), "/home/"));
+        assert!(!regex_check(&new_excluded_item("*home"), "/homefasfasfasfasf/"));
+        assert!(!regex_check(&new_excluded_item("*home"), "/homefasfasfasfasf"));
+        assert!(!regex_check(&new_excluded_item("rafal*afal*fal"), "rafal"));
+        assert!(!regex_check(&new_excluded_item("rafal*a"), "rafal"));
+        assert!(!regex_check(&new_excluded_item("AAAAAAAA****"), "/AAAAAAAAAAAAAAAAA"));
+        assert!(!regex_check(&new_excluded_item("*.git/*"), "/home/.git"));
+        assert!(!regex_check(&new_excluded_item("*home/*koc"), "/koc/home/"));
+        assert!(!regex_check(&new_excluded_item("*home/"), "/home"));
+        assert!(!regex_check(&new_excluded_item("*TTT"), "/GGG"));
+        assert!(regex_check(
+            &new_excluded_item("*/home/*/.local/share/containers"),
+            "/var/home/roman/.local/share/containers"
+        ));
 
-        #[cfg(target_family = "windows")]
-        {
-            assert!(Common::regex_check("*\\home", "C:\\home"));
-            assert!(Common::regex_check("*/home", "C:\\home"));
+        if cfg!(target_family = "windows") {
+            assert!(regex_check(&new_excluded_item("*\\home"), "C:\\home"));
+            assert!(regex_check(&new_excluded_item("*/home"), "C:\\home"));
         }
     }
 
     #[test]
     fn test_windows_path() {
-        assert_eq!(PathBuf::from("C:\\path.txt"), Common::normalize_windows_path("c:/PATH.tXt"));
-        assert_eq!(PathBuf::from("H:\\reka\\weza\\roman.txt"), Common::normalize_windows_path("h:/RekA/Weza\\roMan.Txt"));
-        assert_eq!(PathBuf::from("T:\\a"), Common::normalize_windows_path("T:\\A"));
-        assert_eq!(PathBuf::from("\\\\aBBa"), Common::normalize_windows_path("\\\\aBBa"));
-        assert_eq!(PathBuf::from("a"), Common::normalize_windows_path("a"));
-        assert_eq!(PathBuf::from(""), Common::normalize_windows_path(""));
+        assert_eq!(PathBuf::from("C:\\path.txt"), normalize_windows_path("c:/PATH.tXt"));
+        assert_eq!(PathBuf::from("H:\\reka\\weza\\roman.txt"), normalize_windows_path("h:/RekA/Weza\\roMan.Txt"));
+        assert_eq!(PathBuf::from("T:\\a"), normalize_windows_path("T:\\A"));
+        assert_eq!(PathBuf::from("\\\\aBBa"), normalize_windows_path("\\\\aBBa"));
+        assert_eq!(PathBuf::from("a"), normalize_windows_path("a"));
+        assert_eq!(PathBuf::from(""), normalize_windows_path(""));
     }
 }

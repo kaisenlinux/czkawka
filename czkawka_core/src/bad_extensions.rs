@@ -1,13 +1,12 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::prelude::*;
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use fun_time::fun_time;
-use futures::channel::mpsc::UnboundedSender;
 use log::debug;
 use mime_guess::get_mime_extensions;
 use rayon::prelude::*;
@@ -161,13 +160,25 @@ const WORKAROUNDS: &[(&str, &str)] = &[
     ("exe", "xls"), // Not sure why xls is not recognized
 ];
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Debug)]
 pub struct BadFileEntry {
     pub path: PathBuf,
     pub modified_date: u64,
     pub size: u64,
     pub current_extension: String,
     pub proper_extensions: String,
+}
+
+impl ResultEntry for BadFileEntry {
+    fn get_path(&self) -> &Path {
+        &self.path
+    }
+    fn get_modified_date(&self) -> u64 {
+        self.modified_date
+    }
+    fn get_size(&self) -> u64 {
+        self.size
+    }
 }
 
 #[derive(Default)]
@@ -195,8 +206,8 @@ impl BadExtensions {
     }
 
     #[fun_time(message = "find_bad_extensions_files", level = "info")]
-    pub fn find_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) {
-        self.optimize_dirs_before_start();
+    pub fn find_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) {
+        self.prepare_items();
         if !self.check_files(stop_receiver, progress_sender) {
             self.common_data.stopped_search = true;
             return;
@@ -209,18 +220,12 @@ impl BadExtensions {
     }
 
     #[fun_time(message = "check_files", level = "debug")]
-    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
+    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
         let result = DirTraversalBuilder::new()
-            .root_dirs(self.common_data.directories.included_directories.clone())
+            .common_data(&self.common_data)
             .group_by(|_fe| ())
             .stop_receiver(stop_receiver)
             .progress_sender(progress_sender)
-            .minimal_file_size(self.common_data.minimal_file_size)
-            .maximal_file_size(self.common_data.maximal_file_size)
-            .directories(self.common_data.directories.clone())
-            .allowed_extensions(self.common_data.allowed_extensions.clone())
-            .excluded_items(self.common_data.excluded_items.clone())
-            .recursive_search(self.common_data.recursive_search)
             .build()
             .run();
 
@@ -231,15 +236,13 @@ impl BadExtensions {
 
                 true
             }
-            DirTraversalResult::SuccessFolders { .. } => {
-                unreachable!()
-            }
+
             DirTraversalResult::Stopped => false,
         }
     }
 
     #[fun_time(message = "look_for_bad_extensions_files", level = "debug")]
-    fn look_for_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&UnboundedSender<ProgressData>>) -> bool {
+    fn look_for_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
         let (progress_thread_handle, progress_thread_run, atomic_counter, check_was_stopped) =
             prepare_thread_handler_common(progress_sender, 1, 1, self.files_to_check.len(), CheckingMethod::None, self.get_cd().tool_type);
 
@@ -419,12 +422,14 @@ impl PrintResults for BadExtensions {
         writeln!(
             writer,
             "Results of searching {:?} with excluded directories {:?} and excluded items {:?}",
-            self.common_data.directories.included_directories, self.common_data.directories.excluded_directories, self.common_data.excluded_items.items
+            self.common_data.directories.included_directories,
+            self.common_data.directories.excluded_directories,
+            self.common_data.excluded_items.get_excluded_items()
         )?;
         writeln!(writer, "Found {} files with invalid extension.\n", self.information.number_of_files_with_bad_extension)?;
 
         for file_entry in &self.bad_extensions_files {
-            writeln!(writer, "{} ----- {}", file_entry.path.display(), file_entry.proper_extensions)?;
+            writeln!(writer, "{:?} ----- {}", file_entry.path, file_entry.proper_extensions)?;
         }
 
         Ok(())

@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{PathBuf, MAIN_SEPARATOR};
 
 use gdk4::gdk_pixbuf::{InterpType, Pixbuf};
 use glib::Error;
@@ -28,11 +28,6 @@ use czkawka_core::temporary::Temporary;
 use crate::flg;
 use crate::notebook_enums::{NotebookMainEnum, NotebookUpperEnum};
 use crate::notebook_info::{NotebookObject, NOTEBOOKS_INFO};
-
-#[cfg(not(target_family = "windows"))]
-pub const CHARACTER: char = '/';
-#[cfg(target_family = "windows")]
-pub const CHARACTER: char = '\\';
 
 pub const KEY_DELETE: u32 = 119;
 pub const KEY_ENTER: u32 = 36;
@@ -418,7 +413,7 @@ pub fn get_notebook_object_from_tree_view(tree_view: &TreeView) -> &NotebookObje
 pub fn get_full_name_from_path_name(path: &str, name: &str) -> String {
     let mut string = String::with_capacity(path.len() + name.len() + 1);
     string.push_str(path);
-    string.push(CHARACTER);
+    string.push(MAIN_SEPARATOR);
     string.push_str(name);
     string
 }

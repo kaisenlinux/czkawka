@@ -1,29 +1,30 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use chrono::NaiveDateTime;
+use crossbeam_channel::Receiver;
 use fun_time::fun_time;
-use glib::Receiver;
 use gtk4::prelude::*;
 use gtk4::{Entry, ListStore, TextView, TreeView, Widget};
 use humansize::{format_size, BINARY};
+use rayon::prelude::*;
 
 use czkawka_core::bad_extensions::BadExtensions;
 use czkawka_core::big_file::BigFile;
 use czkawka_core::broken_files::BrokenFiles;
-use czkawka_core::common::split_path;
-use czkawka_core::common_dir_traversal::{CheckingMethod, FileEntry};
+use czkawka_core::common::{split_path, split_path_compare};
+use czkawka_core::common_dir_traversal::CheckingMethod;
 use czkawka_core::common_tool::CommonData;
+use czkawka_core::common_traits::ResultEntry;
 use czkawka_core::duplicate::DuplicateFinder;
 use czkawka_core::empty_files::EmptyFiles;
 use czkawka_core::empty_folder::EmptyFolder;
 use czkawka_core::invalid_symlinks::InvalidSymlinks;
-use czkawka_core::localizer_core::generate_translation_hashmap;
 use czkawka_core::same_music::{MusicSimilarity, SameMusic};
 use czkawka_core::similar_images;
-use czkawka_core::similar_images::SimilarImages;
+use czkawka_core::similar_images::{ImagesEntry, SimilarImages};
 use czkawka_core::similar_videos::SimilarVideos;
 use czkawka_core::temporary::Temporary;
 
@@ -35,7 +36,7 @@ use crate::notebook_enums::*;
 use crate::notebook_info::NOTEBOOKS_INFO;
 use crate::opening_selecting_records::*;
 
-pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<Message>) {
+pub fn connect_compute_results(gui_data: &GuiData, result_receiver: Receiver<Message>) {
     let combo_box_image_hash_size = gui_data.main_notebook.combo_box_image_hash_size.clone();
     let buttons_search = gui_data.bottom_buttons.buttons_search.clone();
     let notebook_main = gui_data.main_notebook.notebook_main.clone();
@@ -75,163 +76,171 @@ pub fn connect_compute_results(gui_data: &GuiData, glib_stop_receiver: Receiver<
     let main_context = glib::MainContext::default();
     let _guard = main_context.acquire().unwrap();
 
-    glib_stop_receiver.attach(None, move |msg| {
-        buttons_search.show();
+    glib::spawn_future_local(async move {
+        loop {
+            loop {
+                let msg = result_receiver.try_recv();
+                if let Ok(msg) = msg {
+                    buttons_search.show();
 
-        notebook_main.set_sensitive(true);
-        notebook_upper.set_sensitive(true);
-        button_settings.set_sensitive(true);
-        button_app_info.set_sensitive(true);
+                    notebook_main.set_sensitive(true);
+                    notebook_upper.set_sensitive(true);
+                    button_settings.set_sensitive(true);
+                    button_app_info.set_sensitive(true);
 
-        window_progress.hide();
+                    window_progress.hide();
 
-        taskbar_state.borrow().hide();
+                    taskbar_state.borrow().hide();
 
-        let hash_size_index = combo_box_image_hash_size.active().unwrap() as usize;
-        let hash_size = IMAGES_HASH_SIZE_COMBO_BOX[hash_size_index] as u8;
+                    let hash_size_index = combo_box_image_hash_size.active().unwrap() as usize;
+                    let hash_size = IMAGES_HASH_SIZE_COMBO_BOX[hash_size_index] as u8;
 
-        match msg {
-            Message::Duplicates(df) => {
-                computer_duplicate_finder(
-                    df,
-                    &entry_info,
-                    &tree_view_duplicate_finder,
-                    &text_view_errors,
-                    &shared_duplication_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
+                    match msg {
+                        Message::Duplicates(df) => {
+                            compute_duplicate_finder(
+                                df,
+                                &entry_info,
+                                &tree_view_duplicate_finder,
+                                &text_view_errors,
+                                &shared_duplication_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::EmptyFolders(ef) => {
+                            compute_empty_folders(
+                                ef,
+                                &entry_info,
+                                &tree_view_empty_folder_finder,
+                                &text_view_errors,
+                                &shared_empty_folders_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::EmptyFiles(vf) => {
+                            compute_empty_files(
+                                vf,
+                                &entry_info,
+                                &tree_view_empty_files_finder,
+                                &text_view_errors,
+                                &shared_empty_files_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::BigFiles(bf) => {
+                            compute_big_files(
+                                bf,
+                                &entry_info,
+                                &tree_view_big_files_finder,
+                                &text_view_errors,
+                                &shared_big_files_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::Temporary(tf) => {
+                            compute_temporary_files(
+                                tf,
+                                &entry_info,
+                                &tree_view_temporary_files_finder,
+                                &text_view_errors,
+                                &shared_temporary_files_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::SimilarImages(sf) => {
+                            compute_similar_images(
+                                sf,
+                                &entry_info,
+                                &tree_view_similar_images_finder,
+                                &text_view_errors,
+                                &shared_similar_images_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                                hash_size,
+                            );
+                        }
+                        Message::SimilarVideos(ff) => {
+                            compute_similar_videos(
+                                ff,
+                                &entry_info,
+                                &tree_view_similar_videos_finder,
+                                &text_view_errors,
+                                &shared_similar_videos_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::SameMusic(mf) => {
+                            compute_same_music(
+                                mf,
+                                &entry_info,
+                                &tree_view_same_music_finder,
+                                &text_view_errors,
+                                &shared_same_music_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::InvalidSymlinks(ifs) => {
+                            compute_invalid_symlinks(
+                                ifs,
+                                &entry_info,
+                                &tree_view_invalid_symlinks,
+                                &text_view_errors,
+                                &shared_same_invalid_symlinks,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::BrokenFiles(br) => {
+                            compute_broken_files(
+                                br,
+                                &entry_info,
+                                &tree_view_broken_files,
+                                &text_view_errors,
+                                &shared_broken_files_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                        Message::BadExtensions(be) => {
+                            compute_bad_extensions(
+                                be,
+                                &entry_info,
+                                &tree_view_bad_extensions,
+                                &text_view_errors,
+                                &shared_bad_extensions_state,
+                                &shared_buttons,
+                                &buttons_array,
+                                &buttons_names,
+                            );
+                        }
+                    }
+                } else {
+                    break;
+                }
             }
-            Message::EmptyFolders(ef) => {
-                computer_empty_folders(
-                    ef,
-                    &entry_info,
-                    &tree_view_empty_folder_finder,
-                    &text_view_errors,
-                    &shared_empty_folders_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::EmptyFiles(vf) => {
-                computer_empty_files(
-                    vf,
-                    &entry_info,
-                    &tree_view_empty_files_finder,
-                    &text_view_errors,
-                    &shared_empty_files_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::BigFiles(bf) => {
-                computer_big_files(
-                    bf,
-                    &entry_info,
-                    &tree_view_big_files_finder,
-                    &text_view_errors,
-                    &shared_big_files_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::Temporary(tf) => {
-                computer_temporary_files(
-                    tf,
-                    &entry_info,
-                    &tree_view_temporary_files_finder,
-                    &text_view_errors,
-                    &shared_temporary_files_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::SimilarImages(sf) => {
-                computer_similar_images(
-                    sf,
-                    &entry_info,
-                    &tree_view_similar_images_finder,
-                    &text_view_errors,
-                    &shared_similar_images_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                    hash_size,
-                );
-            }
-            Message::SimilarVideos(ff) => {
-                computer_similar_videos(
-                    ff,
-                    &entry_info,
-                    &tree_view_similar_videos_finder,
-                    &text_view_errors,
-                    &shared_similar_videos_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::SameMusic(mf) => {
-                computer_same_music(
-                    mf,
-                    &entry_info,
-                    &tree_view_same_music_finder,
-                    &text_view_errors,
-                    &shared_same_music_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::InvalidSymlinks(ifs) => {
-                computer_invalid_symlinks(
-                    ifs,
-                    &entry_info,
-                    &tree_view_invalid_symlinks,
-                    &text_view_errors,
-                    &shared_same_invalid_symlinks,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::BrokenFiles(br) => {
-                computer_broken_files(
-                    br,
-                    &entry_info,
-                    &tree_view_broken_files,
-                    &text_view_errors,
-                    &shared_broken_files_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
-            Message::BadExtensions(be) => {
-                computer_bad_extensions(
-                    be,
-                    &entry_info,
-                    &tree_view_bad_extensions,
-                    &text_view_errors,
-                    &shared_bad_extensions_state,
-                    &shared_buttons,
-                    &buttons_array,
-                    &buttons_names,
-                );
-            }
+            glib::timeout_future(Duration::from_millis(300)).await;
         }
-        // Returning false here would close the receiver and have senders fail
-        glib::ControlFlow::Continue
     });
 }
 
-#[fun_time(message = "computer_bad_extensions", level = "debug")]
-fn computer_bad_extensions(
+#[fun_time(message = "compute_bad_extensions", level = "debug")]
+fn compute_bad_extensions(
     be: BadExtensions,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -249,13 +258,7 @@ fn computer_bad_extensions(
         let text_messages = be.get_text_messages();
 
         let bad_extensions_number: usize = information.number_of_files_with_bad_extension;
-        entry_info.set_text(
-            flg!(
-                "compute_found_bad_extensions",
-                generate_translation_hashmap(vec![("number_files", bad_extensions_number.to_string()),])
-            )
-            .as_str(),
-        );
+        entry_info.set_text(flg!("compute_found_bad_extensions", number_files = bad_extensions_number).as_str());
 
         // Create GUI
         {
@@ -265,10 +268,7 @@ fn computer_bad_extensions(
 
             // Sort
             let mut vector = vector.clone();
-            vector.sort_unstable_by_key(|e| {
-                let t = split_path(e.path.as_path());
-                (t.0, t.1)
-            });
+            vector.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
 
             for file_entry in vector {
                 let (directory, file) = split_path(&file_entry.path);
@@ -304,8 +304,8 @@ fn computer_bad_extensions(
     }
 }
 
-#[fun_time(message = "computer_broken_files", level = "debug")]
-fn computer_broken_files(
+#[fun_time(message = "compute_broken_files", level = "debug")]
+fn compute_broken_files(
     br: BrokenFiles,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -324,13 +324,7 @@ fn computer_broken_files(
 
         let broken_files_number: usize = information.number_of_broken_files;
 
-        entry_info.set_text(
-            flg!(
-                "compute_found_broken_files",
-                generate_translation_hashmap(vec![("number_files", broken_files_number.to_string()),])
-            )
-            .as_str(),
-        );
+        entry_info.set_text(flg!("compute_found_broken_files", number_files = broken_files_number).as_str());
 
         // Create GUI
         {
@@ -340,10 +334,7 @@ fn computer_broken_files(
 
             // Sort
             let mut vector = vector.clone();
-            vector.sort_unstable_by_key(|e| {
-                let t = split_path(e.path.as_path());
-                (t.0, t.1)
-            });
+            vector.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
 
             for file_entry in vector {
                 let (directory, file) = split_path(&file_entry.path);
@@ -378,8 +369,8 @@ fn computer_broken_files(
     }
 }
 
-#[fun_time(message = "computer_invalid_symlinks", level = "debug")]
-fn computer_invalid_symlinks(
+#[fun_time(message = "compute_invalid_symlinks", level = "debug")]
+fn compute_invalid_symlinks(
     ifs: InvalidSymlinks,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -398,13 +389,7 @@ fn computer_invalid_symlinks(
 
         let invalid_symlinks: usize = information.number_of_invalid_symlinks;
 
-        entry_info.set_text(
-            flg!(
-                "compute_found_invalid_symlinks",
-                generate_translation_hashmap(vec![("number_files", invalid_symlinks.to_string()),])
-            )
-            .as_str(),
-        );
+        entry_info.set_text(flg!("compute_found_invalid_symlinks", number_files = invalid_symlinks).as_str());
 
         // Create GUI
         {
@@ -414,7 +399,7 @@ fn computer_invalid_symlinks(
 
             for file_entry in vector {
                 let (directory, file) = split_path(&file_entry.path);
-                let symlink_info = file_entry.symlink_info.clone().expect("invalid traversal result");
+                let symlink_info = file_entry.symlink_info;
                 let values: [(u32, &dyn ToValue); COLUMNS_NUMBER] = [
                     (ColumnsInvalidSymlinks::SelectionButton as u32, &false),
                     (ColumnsInvalidSymlinks::Name as u32, &file),
@@ -450,8 +435,8 @@ fn computer_invalid_symlinks(
     }
 }
 
-#[fun_time(message = "computer_same_music", level = "debug")]
-fn computer_same_music(
+#[fun_time(message = "compute_same_music", level = "debug")]
+fn compute_same_music(
     mf: SameMusic,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -478,10 +463,8 @@ fn computer_same_music(
         entry_info.set_text(
             flg!(
                 "compute_found_music",
-                generate_translation_hashmap(vec![
-                    ("number_files", information.number_of_duplicates.to_string()),
-                    ("number_groups", information.number_of_groups.to_string()),
-                ])
+                number_files = information.number_of_duplicates,
+                number_groups = information.number_of_groups
             )
             .as_str(),
         );
@@ -506,10 +489,7 @@ fn computer_same_music(
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
-                        vec_file_entry.sort_unstable_by_key(|e| {
-                            let t = split_path(e.path.as_path());
-                            (t.0, t.1)
-                        });
+                        vec_file_entry.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
                         vec_file_entry
                     } else {
                         vec_file_entry.clone()
@@ -561,10 +541,7 @@ fn computer_same_music(
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
-                        vec_file_entry.sort_unstable_by_key(|e| {
-                            let t = split_path(e.path.as_path());
-                            (t.0, t.1)
-                        });
+                        vec_file_entry.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
                         vec_file_entry
                     } else {
                         vec_file_entry.clone()
@@ -625,8 +602,8 @@ fn computer_same_music(
     }
 }
 
-#[fun_time(message = "computer_similar_videos", level = "debug")]
-fn computer_similar_videos(
+#[fun_time(message = "compute_similar_videos", level = "debug")]
+fn compute_similar_videos(
     ff: SimilarVideos,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -651,10 +628,8 @@ fn computer_similar_videos(
         entry_info.set_text(
             flg!(
                 "compute_found_videos",
-                generate_translation_hashmap(vec![
-                    ("number_files", information.number_of_duplicates.to_string()),
-                    ("number_groups", information.number_of_groups.to_string()),
-                ])
+                number_files = information.number_of_duplicates,
+                number_groups = information.number_of_groups
             )
             .as_str(),
         );
@@ -670,10 +645,7 @@ fn computer_similar_videos(
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
-                        vec_file_entry.sort_unstable_by_key(|e| {
-                            let t = split_path(e.path.as_path());
-                            (t.0, t.1)
-                        });
+                        vec_file_entry.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
                         vec_file_entry
                     } else {
                         vec_file_entry.clone()
@@ -692,10 +664,7 @@ fn computer_similar_videos(
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
-                        vec_file_entry.sort_unstable_by_key(|e| {
-                            let t = split_path(e.path.as_path());
-                            (t.0, t.1)
-                        });
+                        vec_file_entry.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
                         vec_file_entry
                     } else {
                         vec_file_entry.clone()
@@ -727,8 +696,8 @@ fn computer_similar_videos(
     }
 }
 
-#[fun_time(message = "computer_similar_images", level = "debug")]
-fn computer_similar_images(
+#[fun_time(message = "compute_similar_images", level = "debug")]
+fn compute_similar_images(
     sf: SimilarImages,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -755,10 +724,8 @@ fn computer_similar_images(
         entry_info.set_text(
             flg!(
                 "compute_found_images",
-                generate_translation_hashmap(vec![
-                    ("number_files", information.number_of_duplicates.to_string()),
-                    ("number_groups", information.number_of_groups.to_string()),
-                ])
+                number_files = information.number_of_duplicates,
+                number_groups = information.number_of_groups
             )
             .as_str(),
         );
@@ -768,13 +735,13 @@ fn computer_similar_images(
             let list_store = get_list_store(tree_view);
 
             if sf.get_use_reference() {
-                let vec_struct_similar: &Vec<(similar_images::FileEntry, Vec<similar_images::FileEntry>)> = sf.get_similar_images_referenced();
+                let vec_struct_similar: &Vec<(ImagesEntry, Vec<ImagesEntry>)> = sf.get_similar_images_referenced();
                 for (base_file_entry, vec_file_entry) in vec_struct_similar {
                     // Sort
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
                         // Use comparison by similarity, because it is more important that path here
-                        vec_file_entry.sort_unstable_by_key(|e| e.similarity);
+                        vec_file_entry.par_sort_unstable_by_key(|e| e.similarity);
                         vec_file_entry
                     } else {
                         vec_file_entry.clone()
@@ -788,7 +755,7 @@ fn computer_similar_images(
                         &directory,
                         base_file_entry.size,
                         base_file_entry.modified_date,
-                        &base_file_entry.dimensions,
+                        &format!("{}x{}", base_file_entry.width, base_file_entry.height),
                         0,
                         hash_size,
                         true,
@@ -802,7 +769,7 @@ fn computer_similar_images(
                             &directory,
                             file_entry.size,
                             file_entry.modified_date,
-                            &file_entry.dimensions,
+                            &format!("{}x{}", file_entry.width, file_entry.height),
                             file_entry.similarity,
                             hash_size,
                             false,
@@ -817,7 +784,7 @@ fn computer_similar_images(
                     let vec_file_entry = if vec_file_entry.len() >= 2 {
                         let mut vec_file_entry = vec_file_entry.clone();
                         // Use comparison by similarity, because it is more important that path here
-                        vec_file_entry.sort_unstable_by_key(|e| e.similarity);
+                        vec_file_entry.par_sort_unstable_by_key(|e| e.similarity);
                         vec_file_entry
                     } else {
                         vec_file_entry.clone()
@@ -832,7 +799,7 @@ fn computer_similar_images(
                             &directory,
                             file_entry.size,
                             file_entry.modified_date,
-                            &file_entry.dimensions,
+                            &format!("{}x{}", file_entry.width, file_entry.height),
                             file_entry.similarity,
                             hash_size,
                             false,
@@ -860,8 +827,8 @@ fn computer_similar_images(
     }
 }
 
-#[fun_time(message = "computer_temporary_files", level = "debug")]
-fn computer_temporary_files(
+#[fun_time(message = "compute_temporary_files", level = "debug")]
+fn compute_temporary_files(
     tf: Temporary,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -879,13 +846,7 @@ fn computer_temporary_files(
         let text_messages = tf.get_text_messages();
 
         let temporary_files_number: usize = information.number_of_temporary_files;
-        entry_info.set_text(
-            flg!(
-                "compute_found_temporary_files",
-                generate_translation_hashmap(vec![("number_files", temporary_files_number.to_string()),])
-            )
-            .as_str(),
-        );
+        entry_info.set_text(flg!("compute_found_temporary_files", number_files = temporary_files_number).as_str());
 
         // Create GUI
         {
@@ -895,10 +856,7 @@ fn computer_temporary_files(
 
             // Sort // TODO maybe simplify this via common file entry
             let mut vector = vector.clone();
-            vector.sort_unstable_by_key(|e| {
-                let t = split_path(e.path.as_path());
-                (t.0, t.1)
-            });
+            vector.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
 
             for file_entry in vector {
                 let (directory, file) = split_path(&file_entry.path);
@@ -932,8 +890,8 @@ fn computer_temporary_files(
     }
 }
 
-#[fun_time(message = "computer_big_files", level = "debug")]
-fn computer_big_files(
+#[fun_time(message = "compute_big_files", level = "debug")]
+fn compute_big_files(
     bf: BigFile,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -952,13 +910,7 @@ fn computer_big_files(
 
         let biggest_files_number: usize = information.number_of_real_files;
 
-        entry_info.set_text(
-            flg!(
-                "compute_found_big_files",
-                generate_translation_hashmap(vec![("number_files", biggest_files_number.to_string()),])
-            )
-            .as_str(),
-        );
+        entry_info.set_text(flg!("compute_found_big_files", number_files = biggest_files_number).as_str());
 
         // Create GUI
         {
@@ -1000,8 +952,8 @@ fn computer_big_files(
     }
 }
 
-#[fun_time(message = "computer_empty_files", level = "debug")]
-fn computer_empty_files(
+#[fun_time(message = "compute_empty_files", level = "debug")]
+fn compute_empty_files(
     vf: EmptyFiles,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -1020,13 +972,7 @@ fn computer_empty_files(
 
         let empty_files_number: usize = information.number_of_empty_files;
 
-        entry_info.set_text(
-            flg!(
-                "compute_found_empty_files",
-                generate_translation_hashmap(vec![("number_files", empty_files_number.to_string()),])
-            )
-            .as_str(),
-        );
+        entry_info.set_text(flg!("compute_found_empty_files", number_files = empty_files_number).as_str());
 
         // Create GUI
         {
@@ -1067,8 +1013,8 @@ fn computer_empty_files(
     }
 }
 
-#[fun_time(message = "computer_empty_folders", level = "debug")]
-fn computer_empty_folders(
+#[fun_time(message = "compute_empty_folders", level = "debug")]
+fn compute_empty_folders(
     ef: EmptyFolder,
     entry_info: &Entry,
     tree_view: &TreeView,
@@ -1087,37 +1033,28 @@ fn computer_empty_folders(
 
         let empty_folder_number: usize = information.number_of_empty_folders;
 
-        entry_info.set_text(
-            flg!(
-                "compute_found_empty_folders",
-                generate_translation_hashmap(vec![("number_files", empty_folder_number.to_string()),])
-            )
-            .as_str(),
-        );
+        entry_info.set_text(flg!("compute_found_empty_folders", number_files = empty_folder_number).as_str());
 
         // Create GUI
         {
             let list_store = get_list_store(tree_view);
 
             let hashmap = ef.get_empty_folder_list();
-            let mut vector = hashmap.keys().cloned().collect::<Vec<PathBuf>>();
+            let mut vector = hashmap.values().collect::<Vec<_>>();
 
-            vector.sort_unstable_by_key(|e| {
-                let t = split_path(e.as_path());
-                (t.0, t.1)
-            });
+            vector.par_sort_unstable_by(|a, b| split_path_compare(a.path.as_path(), b.path.as_path()));
 
-            for path in vector {
-                let (directory, file) = split_path(&path);
+            for fe in vector {
+                let (directory, file) = split_path(&fe.path);
                 let values: [(u32, &dyn ToValue); COLUMNS_NUMBER] = [
                     (ColumnsEmptyFolders::SelectionButton as u32, &false),
                     (ColumnsEmptyFolders::Name as u32, &file),
                     (ColumnsEmptyFolders::Path as u32, &directory),
                     (
                         ColumnsEmptyFolders::Modification as u32,
-                        &(NaiveDateTime::from_timestamp_opt(hashmap.get(&path).unwrap().modified_date as i64, 0).unwrap().to_string()),
+                        &(NaiveDateTime::from_timestamp_opt(fe.modified_date as i64, 0).unwrap().to_string()),
                     ),
-                    (ColumnsEmptyFolders::ModificationAsSecs as u32, &(hashmap.get(&path).unwrap().modified_date)),
+                    (ColumnsEmptyFolders::ModificationAsSecs as u32, &(fe.modified_date)),
                 ];
                 list_store.set(&list_store.append(), &values);
             }
@@ -1139,8 +1076,8 @@ fn computer_empty_folders(
     }
 }
 
-#[fun_time(message = "computer_duplicate_finder", level = "debug")]
-fn computer_duplicate_finder(
+#[fun_time(message = "compute_duplicate_finder", level = "debug")]
+fn compute_duplicate_finder(
     df: DuplicateFinder,
     entry_info: &Entry,
     tree_view_duplicate_finder: &TreeView,
@@ -1190,22 +1127,14 @@ fn computer_duplicate_finder(
             _ => panic!(),
         }
         if duplicates_size == 0 {
-            entry_info.set_text(
-                flg!(
-                    "compute_found_duplicates_name",
-                    generate_translation_hashmap(vec![("number_files", duplicates_number.to_string()), ("number_groups", duplicates_group.to_string())])
-                )
-                .as_str(),
-            );
+            entry_info.set_text(flg!("compute_found_duplicates_name", number_files = duplicates_number, number_groups = duplicates_group).as_str());
         } else {
             entry_info.set_text(
                 flg!(
                     "compute_found_duplicates_hash_size",
-                    generate_translation_hashmap(vec![
-                        ("number_files", duplicates_number.to_string()),
-                        ("number_groups", duplicates_group.to_string()),
-                        ("size", format_size(duplicates_size, BINARY))
-                    ])
+                    number_files = duplicates_number,
+                    number_groups = duplicates_group,
+                    size = format_size(duplicates_size, BINARY)
                 )
                 .as_str(),
             );
@@ -1350,25 +1279,27 @@ fn computer_duplicate_finder(
     }
 }
 
-fn vector_sort_unstable_entry_by_path(vector: &Vec<FileEntry>) -> Vec<FileEntry> {
+fn vector_sort_unstable_entry_by_path<T>(vector: &[T]) -> Vec<T>
+where
+    T: ResultEntry + Clone,
+    T: Send,
+{
     if vector.len() >= 2 {
-        let mut vector = vector.clone();
-        vector.sort_unstable_by_key(|e| {
-            let t = split_path(e.path.as_path());
-            (t.0, t.1)
-        });
+        let mut vector = vector.to_vec();
+        vector.par_sort_unstable_by(|a, b| split_path_compare(a.get_path(), b.get_path()));
         vector
     } else {
-        vector.clone()
+        vector.to_vec()
     }
 }
 
-fn vector_sort_simple_unstable_entry_by_path(vector: &[FileEntry]) -> Vec<FileEntry> {
-    let mut vector = vector.to_owned();
-    vector.sort_unstable_by_key(|e| {
-        let t = split_path(e.path.as_path());
-        (t.0, t.1)
-    });
+fn vector_sort_simple_unstable_entry_by_path<T>(vector: &[T]) -> Vec<T>
+where
+    T: ResultEntry + Clone,
+    T: Send,
+{
+    let mut vector = vector.to_vec();
+    vector.par_sort_unstable_by(|a, b| split_path_compare(a.get_path(), b.get_path()));
     vector
 }
 
