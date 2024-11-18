@@ -18,6 +18,11 @@ music_checking_by_tags = Tagi
 music_checking_by_content = Zawartość
 same_music_seconds_label = Minimalny fragment drugi czas trwania
 same_music_similarity_label = Maksymalna różnica
+music_compare_only_in_title_group = Porównaj tylko w tytule
+music_compare_only_in_title_group_tooltip =
+    Gdy włączone, pliki są pogrupowane według tytułu, a następnie porównywane do siebie.
+    
+    z 10000 plików, zamiast tego prawie 100 milionów porównań będzie około 20000 porównań.
 same_music_tooltip =
     Wyszukiwanie podobnych plików muzycznych przez jego zawartość można skonfigurować przez ustawienie:
     
@@ -239,6 +244,7 @@ bottom_delete_button = Usuń
 bottom_save_button = Zapisz
 bottom_symlink_button = Symlink
 bottom_hardlink_button = Hardlink
+bottom_compare_button = Porównaj
 bottom_move_button = Przenieś
 bottom_sort_button = Sortuj
 bottom_search_button_tooltip = Rozpocznij wyszukiwanie
@@ -262,6 +268,7 @@ bottom_move_button_tooltip =
     Przenosi pliki do wybranego katalogu.
     Kopiuje wszystkie pliki do katalogu bez zachowania struktury plików.
     Podczas próby przeniesienia dwóch plików o identycznej nazwie do folderu, drugi plik nie zostanie przeniesiony i pojawi się błąd.
+bottom_compare_button_tooltip = Porównuje pliki/foldery w grupach.
 bottom_sort_button_tooltip = Sortuje pliki/foldery zgodnie z wybraną metodą.
 bottom_show_errors_tooltip = Pokaż/Ukryj dolny panel tekstowy.
 bottom_show_upper_notebook_tooltip = Pokazuje/ukrywa górny panel.
@@ -288,6 +295,13 @@ header_about_button_tooltip = Otwórz okno z informacjami o programie.
 
 settings_number_of_threads = Liczba używanych wątków
 settings_number_of_threads_tooltip = Liczba używanych wątków, 0 oznacza, że zostaną użyte wszystkie dostępne wątki.
+settings_use_rust_preview = Użyj zewnętrznych bibliotek zamiast gtk, aby załadować podgląd
+settings_use_rust_preview_tooltip =
+    Korzystanie z podglądu gtk będzie czasem szybsze i obsługuje więcej formatów, ale czasami może to być dokładnie odwrotne.
+    
+    Jeśli masz problemy z ładowaniem podglądów, możesz spróbować zmienić to ustawienie.
+    
+    W systemach innych niż linux zaleca się użycie tej opcji, ponieważ gtk-pixbuf nie zawsze jest tam dostępny, więc wyłączenie tej opcji nie załaduje podglądu niektórych obrazów.
 settings_label_restart = Musisz ponownie uruchomić aplikację, aby aplikacja zaciągnęła nowe ustawienia!
 settings_ignore_other_filesystems = Ignoruj inne systemy plików (tylko Linux)
 settings_ignore_other_filesystems_tooltip =

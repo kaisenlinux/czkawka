@@ -3,10 +3,10 @@ Section: utils
 Priority: optional
 Maintainer: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
 Build-Depends: debhelper-compat (= 13),
-	       rust-all,
+	       rust-all (>= 1.82),
 	       libgtk-4-dev,
 	       libasound2-dev,
-Standards-Version: 4.6.0
+Standards-Version: 4.7.0
 Homepage: https://qarmin.github.io/czkawka/
 Vcs-Browser: https://gitlab.com/kaisenlinux/packages/czkawka
 Vcs-Git: https://gitlab.com/kaisenlinux/packages/czkawka.git
