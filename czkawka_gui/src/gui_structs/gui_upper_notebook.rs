@@ -3,7 +3,7 @@ use gtk4::{EventControllerKey, GestureClick, TreeView};
 
 use crate::help_functions::{get_all_direct_children, get_custom_label_from_widget, set_icon_of_button};
 use crate::notebook_enums::NotebookUpperEnum;
-use crate::{flg, CZK_ICON_ADD, CZK_ICON_DELETE, CZK_ICON_MANUAL_ADD};
+use crate::{CZK_ICON_ADD, CZK_ICON_DELETE, CZK_ICON_MANUAL_ADD, flg};
 
 #[derive(Clone)]
 pub struct GuiUpperNotebook {
@@ -190,7 +190,7 @@ impl GuiUpperNotebook {
             ], // Included folders
         ];
 
-        for (notebook_index, tree_view) in [self.tree_view_included_directories.clone()].iter().enumerate() {
+        for (notebook_index, tree_view) in std::iter::once(&self.tree_view_included_directories.clone()).enumerate() {
             for (column_index, column) in tree_view.columns().iter().enumerate() {
                 column.set_title(&names_of_columns[notebook_index][column_index]);
             }

@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8' standalone='no'?>
 <!DOCTYPE cambalache-project SYSTEM "cambalache-project.dtd">
-<cambalache-project version="0.92.0" target_tk="gtk-4.0">
+<cambalache-project version="0.94.0" target_tk="gtk-4.0">
   <ui>
 	(3,None,"about_dialog.ui","about_dialog.ui",None,None,None,None,None,None,None),
 	(4,None,"compare_images.ui","compare_images.ui",None,None,None,None,None,None,None),
@@ -344,11 +344,11 @@
 	(10,7,"GtkButton","buttons_popover_sort_selection",2,None,None,None,4,None,None)
   </object>
   <object_property>
-	(3,1,"GtkAboutDialog","comments","2020 - 2024\nRafał Mikrut (qarmin) and contributors\nThis program is free to use and will always be.",1,None,None,None,None,None,None,None,None),
+	(3,1,"GtkAboutDialog","comments","2020 - 2025\nRafał Mikrut (qarmin) and contributors\nThis program is free to use and will always be.\nApp is now in maintenance mode, so check Krokiet, the sucessor of Czkawka",1,None,None,None,None,None,None,None,None),
 	(3,1,"GtkAboutDialog","license-type","mit-x11",None,None,None,None,None,None,None,None,None),
 	(3,1,"GtkAboutDialog","logo-icon-name","help-about-symbolic",None,None,None,None,None,None,None,None,None),
 	(3,1,"GtkAboutDialog","program-name","Czkawka",None,None,None,None,None,None,None,None,None),
-	(3,1,"GtkAboutDialog","version","8.0.0",None,None,None,None,None,None,None,None,None),
+	(3,1,"GtkAboutDialog","version","9.0.0",None,None,None,None,None,None,None,None,None),
 	(4,2,"GtkOrientable","orientation","vertical",None,None,None,None,None,None,None,None,None),
 	(4,2,"GtkWidget","vexpand","1",None,None,None,None,None,None,None,None,None),
 	(4,4,"GtkLabel","label","Group XD/PER XD (99 images in current group)",1,None,None,None,None,None,None,None,None),
@@ -687,7 +687,7 @@
 	(5,177,"GtkWidget","focusable","1",None,None,None,None,None,None,None,None,None),
 	(5,177,"GtkWidget","hexpand","1",None,None,None,None,None,None,None,None,None),
 	(5,178,"GtkEditable","editable","0",None,None,None,None,None,None,None,None,None),
-	(5,178,"GtkEditable","text","Czkawka 8.0.0",1,None,None,None,None,None,None,None,None),
+	(5,178,"GtkEditable","text","Czkawka 9.0.0",1,None,None,None,None,None,None,None,None),
 	(5,178,"GtkEditable","xalign","1",None,None,None,None,None,None,None,None,None),
 	(5,178,"GtkEntry","has-frame","0",None,None,None,None,None,None,None,None,None),
 	(5,178,"GtkWidget","focusable","1",None,None,None,None,None,None,None,None,None),

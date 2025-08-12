@@ -477,23 +477,29 @@ compute_found_broken_files = Found { $number_files } broken files
 compute_found_bad_extensions = Found { $number_files } files with invalid extensions
 
 # Progress window
-progress_scanning_general_file = Scanning {$file_number} file
+progress_scanning_general_file = {$file_number -> 
+        [one] Scanned {$file_number} file
+       *[other] Scanned {$file_number} files
+}
 
-progress_scanning_extension_of_files = Checking extension of {$file_checked}/{$all_files} file
-progress_scanning_broken_files = Checking {$file_checked}/{$all_files} file
-progress_scanning_video = Hashing of {$file_checked}/{$all_files} video
-progress_scanning_image = Hashing of {$file_checked}/{$all_files} image
-progress_comparing_image_hashes = Comparing {$file_checked}/{$all_files} image hash
-progress_scanning_music_tags_end = Comparing tags of {$file_checked}/{$all_files} music file
-progress_scanning_music_tags = Reading tags of {$file_checked}/{$all_files} music file
-progress_scanning_music_content_end = Comparing fingerprint of {$file_checked}/{$all_files} music file
-progress_scanning_music_content = Calculating fingerprint of {$file_checked}/{$all_files} music file
-progress_scanning_empty_folders = Scanning {$folder_number} folder
-progress_scanning_size = Scanning size of {$file_number} file
-progress_scanning_size_name = Scanning name and size of {$file_number} file
-progress_scanning_name = Scanning name of {$file_number} file
-progress_analyzed_partial_hash = Analyzed partial hash of {$file_checked}/{$all_files} files
-progress_analyzed_full_hash = Analyzed full hash of {$file_checked}/{$all_files} files
+progress_scanning_extension_of_files = Checked extension of {$file_checked}/{$all_files} file
+progress_scanning_broken_files = Checked {$file_checked}/{$all_files} file ({$data_checked}/{$all_data})
+progress_scanning_video = Hashed of {$file_checked}/{$all_files} video
+progress_scanning_image = Hashed of {$file_checked}/{$all_files} image ({$data_checked}/{$all_data})
+progress_comparing_image_hashes = Compared {$file_checked}/{$all_files} image hash
+progress_scanning_music_tags_end = Compared tags of {$file_checked}/{$all_files} music file
+progress_scanning_music_tags = Read tags of {$file_checked}/{$all_files} music file
+progress_scanning_music_content_end = Compared fingerprint of {$file_checked}/{$all_files} music file
+progress_scanning_music_content = Calculated fingerprint of {$file_checked}/{$all_files} music file ({$data_checked}/{$all_data})
+progress_scanning_empty_folders = {$folder_number -> 
+        [one] Scanned {$folder_number} folder
+       *[other] Scanned {$folder_number} folders
+}
+progress_scanning_size = Scanned size of {$file_number} file
+progress_scanning_size_name = Scanned name and size of {$file_number} file
+progress_scanning_name = Scanned name of {$file_number} file
+progress_analyzed_partial_hash = Analyzed partial hash of {$file_checked}/{$all_files} files ({$data_checked}/{$all_data})
+progress_analyzed_full_hash = Analyzed full hash of {$file_checked}/{$all_files} files ({$data_checked}/{$all_data})
 progress_prehash_cache_loading = Loading prehash cache
 progress_prehash_cache_saving = Saving prehash cache
 progress_hash_cache_loading = Loading hash cache

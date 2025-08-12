@@ -9,8 +9,8 @@ use gtk4::{DropTarget, FileChooserNative, Notebook, Orientation, ResponseType, T
 
 use crate::flg;
 use crate::gui_structs::gui_data::GuiData;
-use crate::help_functions::{check_if_value_is_in_list_store, get_list_store, ColumnsExcludedDirectory, ColumnsIncludedDirectory};
-use crate::notebook_enums::{to_notebook_upper_enum, NotebookUpperEnum};
+use crate::help_functions::{ColumnsExcludedDirectory, ColumnsIncludedDirectory, check_if_value_is_in_list_store, get_list_store};
+use crate::notebook_enums::{NotebookUpperEnum, to_notebook_upper_enum};
 
 pub fn connect_selection_of_directories(gui_data: &GuiData) {
     // Add manually directory
@@ -138,7 +138,7 @@ fn connect_file_dialog(file_dialog_include_exclude_folder_selection: &FileChoose
                     excluded_items = true;
                     &exclude_tree_view
                 }
-                _ => panic!(),
+                NotebookUpperEnum::ItemsConfiguration => panic!(),
             };
 
             let mut folders: Vec<PathBuf> = Vec::new();

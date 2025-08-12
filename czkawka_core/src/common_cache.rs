@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{BufReader, BufWriter};
+use std::path::Path;
 
 use fun_time::fun_time;
+use humansize::{BINARY, format_size};
 use image::imageops::FilterType;
 use image_hasher::HashAlg;
 use log::{debug, error};
@@ -11,11 +14,16 @@ use serde::{Deserialize, Serialize};
 use crate::common;
 use crate::common_messages::Messages;
 use crate::common_traits::ResultEntry;
-use crate::duplicate::HashType;
-use crate::similar_images::{convert_algorithm_to_string, convert_filters_to_string};
+use crate::tools::duplicate::HashType;
+use crate::tools::similar_images::{convert_algorithm_to_string, convert_filters_to_string};
 
 const CACHE_VERSION: &str = "70";
-const CACHE_IMAGE_VERSION: &str = "80";
+const CACHE_DUPLICATE_VERSION: &str = "90";
+#[cfg(feature = "fast_image_resize")]
+const CACHE_IMAGE_VERSION: &str = "90_fast_resize";
+#[cfg(not(feature = "fast_image_resize"))]
+const CACHE_IMAGE_VERSION: &str = "90_image_rs_resize";
+const CACHE_VIDEO_VERSION: &str = "90";
 
 pub fn get_broken_files_cache_file() -> String {
     format!("cache_broken_files_{CACHE_VERSION}.bin")
@@ -30,7 +38,7 @@ pub fn get_similar_images_cache_file(hash_size: &u8, hash_alg: &HashAlg, image_f
 }
 
 pub fn get_similar_videos_cache_file() -> String {
-    format!("cache_similar_videos_{CACHE_VERSION}.bin")
+    format!("cache_similar_videos_{CACHE_VIDEO_VERSION}.bin")
 }
 pub fn get_similar_music_cache_file(checking_tags: bool) -> String {
     if checking_tags {
@@ -42,7 +50,11 @@ pub fn get_similar_music_cache_file(checking_tags: bool) -> String {
 
 pub fn get_duplicate_cache_file(type_of_hash: &HashType, is_prehash: bool) -> String {
     let prehash_str = if is_prehash { "_prehash" } else { "" };
-    format!("cache_duplicates_{type_of_hash:?}{prehash_str}_{CACHE_VERSION}.bin")
+    format!("cache_duplicates_{type_of_hash:?}{prehash_str}_{CACHE_DUPLICATE_VERSION}.bin")
+}
+
+fn get_cache_size(file_name: &Path) -> String {
+    fs::metadata(file_name).map_or_else(|_| "<unknown size>".to_string(), |metadata| format_size(metadata.len(), BINARY))
 }
 
 #[fun_time(message = "save_cache_to_file_generalized", level = "debug")]
@@ -63,7 +75,7 @@ where
                 debug!("Failed to save cache to file {cache_file:?}");
                 return text_messages;
             }
-            debug!("Saved binary to file {cache_file:?}");
+            debug!("Saved cache to binary file {cache_file:?} with size {}", get_cache_size(&cache_file));
         }
         if save_also_as_json {
             if let Some(file_handler_json) = file_handler_json {
@@ -73,7 +85,7 @@ where
                     debug!("Failed to save cache to file {cache_file_json:?}");
                     return text_messages;
                 }
-                debug!("Saved json to file {cache_file_json:?}");
+                debug!("Saved cache to json file {cache_file_json:?} with size {}", get_cache_size(&cache_file_json));
             }
         }
 
@@ -192,8 +204,10 @@ where
     let mut text_messages = Messages::new();
 
     if let Some(((file_handler, cache_file), (file_handler_json, cache_file_json))) = common::open_cache_folder(cache_file_name, false, true, &mut text_messages.warnings) {
+        let cache_full_name;
         let mut vec_loaded_entries: Vec<T>;
         if let Some(file_handler) = file_handler {
+            cache_full_name = cache_file.clone();
             let reader = BufReader::new(file_handler);
 
             // TODO cannot use limits
@@ -212,6 +226,7 @@ where
                 }
             };
         } else {
+            cache_full_name = cache_file_json.clone();
             let reader = BufReader::new(file_handler_json.expect("This cannot fail, because if file_handler is None, then this cannot be None"));
             vec_loaded_entries = match serde_json::from_reader(reader) {
                 Ok(t) => t,
@@ -260,7 +275,11 @@ where
 
         text_messages.messages.push(format!("Properly loaded {} cache entries.", vec_loaded_entries.len()));
 
-        debug!("Loaded cache from file {cache_file_name} (or json alternative) - {} results", vec_loaded_entries.len());
+        debug!(
+            "Loaded cache from file {cache_file_name} (or json alternative) - {} results - size {}",
+            vec_loaded_entries.len(),
+            get_cache_size(&cache_full_name)
+        );
         return (text_messages, Some(vec_loaded_entries));
     }
     debug!("Failed to load cache from file {cache_file_name} because not exists");

@@ -1,16 +1,16 @@
 [package]
 name = "czkawka_gui"
-version = "8.0.0"
+version = "9.0.0"
 authors = ["Rafał Mikrut <mikrutrafal@protonmail.com>"]
-edition = "2021"
-rust-version = "1.79.0"
+edition = "2024"
+rust-version = "1.85.0"
 description = "GTK frontend of Czkawka"
 license = "MIT"
 homepage = "https://github.com/qarmin/czkawka"
 repository = "https://github.com/qarmin/czkawka"
 
 [dependencies]
-gdk4 = "0.9"
+gdk4 = { version = "0.9", default-features = false, features = ["v4_6"] }
 glib = "0.20"
 gtk4 = { version = "0.9", default-features = false, features = ["v4_6"] }
 
@@ -33,7 +33,7 @@ image = "0.25"
 regex = "1.11"
 
 # To get image_hasher types
-image_hasher = "2.0"
+image_hasher = "3.0"
 
 # Move files to trash
 trash = "5.1"
@@ -48,17 +48,20 @@ rust-embed = { version = "8.5", features = ["debug-embed"] }
 once_cell = "1.20"
 
 log = "0.4.22"
-handsome_logger = "0.8"
 fun_time = { version = "0.3", features = ["log"] }
 rayon = "1.10"
 
-czkawka_core = { path = "../czkawka_core", version = "8.0.0", features = [] }
+czkawka_core = { path = "../czkawka_core", version = "9.0.0", features = [] }
+
+[dev-dependencies]
+rand = "0.9.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.9", features = ["combaseapi", "objbase", "shobjidl_core", "windef", "winerror", "wtypesbase", "winuser"] }
 
 [features]
-default = []
+default = ["fast_image_resize"]
 heif = ["czkawka_core/heif"]
 libraw = ["czkawka_core/libraw"]
 libavif = ["czkawka_core/libavif"]
+fast_image_resize = ["czkawka_core/fast_image_resize"]

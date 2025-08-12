@@ -50,6 +50,7 @@ impl GuiAbout {
             "Aarni Koskela",
             "Adam Boguszewski",
             "Alex",
+            "AshesOfEther",
             "Caduser2020",
             "CalunVier",
             "Danny Kirkham",
@@ -59,6 +60,7 @@ impl GuiAbout {
             "Farmadupe",
             "Fr_Dae",
             "Gitoffthelawn",
+            "Integral",
             "Ivan Habernal",
             "Jan Jurec",
             "Joey Babcock",
@@ -69,6 +71,7 @@ impl GuiAbout {
             "Meir Klemfner",
             "Mek101",
             "Michael Grigoryan",
+            "Mitchel Stewart",
             "Nick Gallimore",
             "Nikita Karamov",
             "OMEGA_RAZER",
@@ -125,7 +128,7 @@ impl GuiAbout {
     }
 
     pub fn update_language(&self) {
-        let mut comment_text: String = "2020 - 2024  Rafał Mikrut(qarmin)\n\n".to_string();
+        let mut comment_text: String = "2020 - 2025  Rafał Mikrut(qarmin)\n\n".to_string();
         comment_text += &flg!("about_window_motto");
         self.about_dialog.set_comments(Some(&comment_text));
 

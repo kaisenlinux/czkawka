@@ -2,16 +2,16 @@ use std::fs;
 use std::fs::DirEntry;
 use std::io::prelude::*;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Sender;
 use fun_time::fun_time;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::common::{check_folder_children, check_if_stop_received, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads};
-use crate::common_dir_traversal::{common_read_dir, get_modified_time, ToolType};
+use crate::common::{WorkContinueStatus, check_folder_children, check_if_stop_received, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads};
+use crate::common_dir_traversal::{ToolType, common_read_dir, get_modified_time};
 use crate::common_tool::{CommonData, CommonToolData, DeleteMethod};
 use crate::common_traits::*;
 use crate::progress_data::{CurrentStage, ProgressData};
@@ -68,9 +68,9 @@ impl Temporary {
     }
 
     #[fun_time(message = "find_temporary_files", level = "info")]
-    pub fn find_temporary_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) {
+    pub fn find_temporary_files(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) {
         self.prepare_items();
-        if !self.check_files(stop_receiver, progress_sender) {
+        if self.check_files(stop_flag, progress_sender) == WorkContinueStatus::Stop {
             self.common_data.stopped_search = true;
             return;
         }
@@ -79,16 +79,16 @@ impl Temporary {
     }
 
     #[fun_time(message = "check_files", level = "debug")]
-    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn check_files(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         let mut folders_to_check: Vec<PathBuf> = self.common_data.directories.included_directories.clone();
 
-        let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::CollectingFiles, 0, self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::CollectingFiles, 0, self.get_test_type(), 0);
 
         while !folders_to_check.is_empty() {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
 
             let segments: Vec<_> = folders_to_check
@@ -121,7 +121,7 @@ impl Temporary {
                                 &self.common_data.excluded_items,
                             );
                         } else if file_type.is_file() {
-                            if let Some(file_entry) = self.get_file_entry(&atomic_counter, &entry_data, &mut warnings) {
+                            if let Some(file_entry) = self.get_file_entry(&items_counter, &entry_data, &mut warnings) {
                                 fe_result.push(file_entry);
                             }
                         }
@@ -146,10 +146,10 @@ impl Temporary {
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
         self.information.number_of_temporary_files = self.temporary_files.len();
 
-        true
+        WorkContinueStatus::Continue
     }
-    pub fn get_file_entry(&self, atomic_counter: &Arc<AtomicUsize>, entry_data: &DirEntry, warnings: &mut Vec<String>) -> Option<TemporaryFileEntry> {
-        atomic_counter.fetch_add(1, Ordering::Relaxed);
+    pub fn get_file_entry(&self, items_counter: &Arc<AtomicUsize>, entry_data: &DirEntry, warnings: &mut Vec<String>) -> Option<TemporaryFileEntry> {
+        items_counter.fetch_add(1, Ordering::Relaxed);
 
         let current_file_name = entry_data.path();
         if self.common_data.excluded_items.is_excluded(&current_file_name) {
@@ -180,7 +180,7 @@ impl Temporary {
             DeleteMethod::Delete => {
                 let mut warnings = Vec::new();
                 for file_entry in &self.temporary_files {
-                    if fs::remove_file(file_entry.path.clone()).is_err() {
+                    if fs::remove_file(&file_entry.path).is_err() {
                         warnings.push(file_entry.path.to_string_lossy().to_string());
                     }
                 }

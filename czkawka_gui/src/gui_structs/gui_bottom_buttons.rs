@@ -2,10 +2,10 @@ use gtk4::prelude::*;
 use gtk4::{GestureClick, Widget};
 
 use crate::gui_structs::gui_data::CZK_ICON_SORT;
-use crate::help_functions::{get_custom_label_from_widget, set_icon_of_button, BottomButtonsEnum};
+use crate::help_functions::{BottomButtonsEnum, get_custom_label_from_widget, set_icon_of_button};
 use crate::{
-    flg, CZK_ICON_COMPARE, CZK_ICON_HARDLINK, CZK_ICON_HIDE_DOWN, CZK_ICON_HIDE_UP, CZK_ICON_MOVE, CZK_ICON_SAVE, CZK_ICON_SEARCH, CZK_ICON_SELECT, CZK_ICON_SYMLINK,
-    CZK_ICON_TRASH,
+    CZK_ICON_COMPARE, CZK_ICON_HARDLINK, CZK_ICON_HIDE_DOWN, CZK_ICON_HIDE_UP, CZK_ICON_MOVE, CZK_ICON_SAVE, CZK_ICON_SEARCH, CZK_ICON_SELECT, CZK_ICON_SYMLINK, CZK_ICON_TRASH,
+    flg,
 };
 
 #[derive(Clone)]
@@ -156,6 +156,8 @@ fn test_hardlinks() -> bool {
     use directories_next::ProjectDirs;
 
     let mut hardlinked = false;
+
+    // TODO - use temporary files instead of project dirs
 
     if let Some(proj_dirs) = ProjectDirs::from("pl", "Qarmin", "Czkawka") {
         let cache_dir = proj_dirs.cache_dir();

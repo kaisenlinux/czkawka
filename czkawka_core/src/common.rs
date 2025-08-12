@@ -1,48 +1,155 @@
 use std::cmp::Ordering;
 use std::ffi::OsString;
 use std::fs::{DirEntry, File, OpenOptions};
+use std::io::Error;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::{atomic, Arc};
-use std::thread::{sleep, JoinHandle};
-use std::time::{Duration, SystemTime};
-use std::{fs, thread};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+use std::sync::{Arc, atomic};
+use std::thread::{JoinHandle, sleep};
+use std::time::{Duration, Instant};
+use std::{fs, io, thread};
 
 use crossbeam_channel::Sender;
 use directories_next::ProjectDirs;
 use fun_time::fun_time;
 use handsome_logger::{ColorChoice, ConfigBuilder, TerminalMode};
-use log::{debug, info, warn, LevelFilter, Record};
+use log::{LevelFilter, Record, debug, info, warn};
+use once_cell::sync::OnceCell;
 
 // #[cfg(feature = "heif")]
 // use libheif_rs::LibHeif;
+use crate::CZKAWKA_VERSION;
 use crate::common_dir_traversal::{CheckingMethod, ToolType};
 use crate::common_directory::Directories;
 use crate::common_items::{ExcludedItems, SingleExcludedItem};
 use crate::common_messages::Messages;
 use crate::common_tool::DeleteMethod;
 use crate::common_traits::ResultEntry;
-use crate::duplicate::make_hard_link;
 use crate::progress_data::{CurrentStage, ProgressData};
-use crate::CZKAWKA_VERSION;
 
 static NUMBER_OF_THREADS: state::InitCell<usize> = state::InitCell::new();
 static ALL_AVAILABLE_THREADS: state::InitCell<usize> = state::InitCell::new();
+static CONFIG_CACHE_PATH: OnceCell<Option<ConfigCachePath>> = OnceCell::new();
+
 pub const DEFAULT_THREAD_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 pub const DEFAULT_WORKER_THREAD_SIZE: usize = 4 * 1024 * 1024; // 4 MB
 
+const TEMP_HARDLINK_FILE: &str = "rzeczek.rxrxrxl";
+
+#[derive(Debug, PartialEq)]
+pub enum WorkContinueStatus {
+    Continue,
+    Stop,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigCachePath {
+    pub config_folder: PathBuf,
+    pub cache_folder: PathBuf,
+}
+
+pub fn get_config_cache_path() -> Option<ConfigCachePath> {
+    CONFIG_CACHE_PATH.get().expect("Cannot fail if set_config_cache_path was called before").clone()
+}
+
+pub fn set_config_cache_path(cache_name: &'static str, config_name: &'static str) {
+    // By default, such folders are used:
+    // Lin: /home/username/.config/czkawka
+    // Win: C:\Users\Username\AppData\Roaming\Qarmin\Czkawka\config
+    // Mac: /Users/Username/Library/Application Support/pl.Qarmin.Czkawka
+
+    let config_folder_env = std::env::var("CZKAWKA_CONFIG_PATH").unwrap_or_default().trim().to_string();
+    let cache_folder_env = std::env::var("CZKAWKA_CACHE_PATH").unwrap_or_default().trim().to_string();
+
+    let default_config_folder;
+    let default_cache_folder;
+    if let Some(proj_dirs) = ProjectDirs::from("pl", "Qarmin", cache_name) {
+        default_cache_folder = Some(proj_dirs.cache_dir().to_path_buf());
+    } else {
+        default_cache_folder = None;
+    }
+    if let Some(proj_dirs) = ProjectDirs::from("pl", "Qarmin", config_name) {
+        default_config_folder = Some(proj_dirs.config_dir().to_path_buf());
+    } else {
+        default_config_folder = None;
+    }
+
+    let resolve_folder = |env_var: &str, default_folder: Option<PathBuf>, name: &'static str| {
+        let default_folder_str = default_folder.as_ref().map_or("<not available>".to_string(), |t| t.to_string_lossy().to_string());
+
+        if env_var.is_empty() {
+            default_folder
+        } else {
+            let folder_path = PathBuf::from(env_var);
+            let _ = fs::create_dir_all(&folder_path);
+            if !folder_path.exists() {
+                warn!(
+                    "{name} folder \"{}\" does not exist, using default folder \"{}\"",
+                    folder_path.to_string_lossy(),
+                    default_folder_str
+                );
+                return default_folder;
+            };
+            if !folder_path.is_dir() {
+                warn!(
+                    "{name} folder \"{}\" is not a directory, using default folder \"{}\"",
+                    folder_path.to_string_lossy(),
+                    default_folder_str
+                );
+                return default_folder;
+            }
+
+            match folder_path.canonicalize() {
+                Ok(t) => Some(t),
+                Err(_e) => {
+                    warn!(
+                        "Cannot canonicalize {} folder \"{}\", using default folder \"{}\"",
+                        name.to_ascii_lowercase(),
+                        env_var,
+                        default_folder_str
+                    );
+                    default_folder
+                }
+            }
+        }
+    };
+
+    let config_folder = resolve_folder(&config_folder_env, default_config_folder, "Config");
+    let cache_folder = resolve_folder(&cache_folder_env, default_cache_folder, "Cache");
+
+    let config_cache_path = if let (Some(config_folder), Some(cache_folder)) = (config_folder, cache_folder) {
+        info!(
+            "Config folder set to \"{}\" and cache folder set to \"{}\"",
+            config_folder.to_string_lossy(),
+            cache_folder.to_string_lossy()
+        );
+        if !config_folder.exists() {
+            if let Err(e) = fs::create_dir_all(&config_folder) {
+                warn!("Cannot create config folder \"{}\", reason {e}", config_folder.to_string_lossy());
+            }
+        }
+        if !cache_folder.exists() {
+            if let Err(e) = fs::create_dir_all(&cache_folder) {
+                warn!("Cannot create cache folder \"{}\", reason {e}", cache_folder.to_string_lossy());
+            }
+        }
+        Some(ConfigCachePath { config_folder, cache_folder })
+    } else {
+        warn!("Cannot set config/cache path - config and cache will not be used.");
+        None
+    };
+
+    CONFIG_CACHE_PATH.set(config_cache_path).expect("Cannot set config/cache path twice");
+}
+
 pub fn get_number_of_threads() -> usize {
     let data = NUMBER_OF_THREADS.get();
-    if *data >= 1 {
-        *data
-    } else {
-        get_all_available_threads()
-    }
+    if *data >= 1 { *data } else { get_all_available_threads() }
 }
 
 fn filtering_messages(record: &Record) -> bool {
     if let Some(module_path) = record.module_path() {
-        module_path.starts_with("czkawka") || module_path.starts_with("krokiet")
+        ["czkawka", "krokiet"].iter().any(|t| module_path.starts_with(t))
     } else {
         true
     }
@@ -64,7 +171,8 @@ pub fn get_all_available_threads() -> usize {
 }
 
 #[allow(clippy::vec_init_then_push)]
-pub fn print_version_mode() {
+#[allow(unused_mut)]
+pub fn print_version_mode(app: &str) {
     let rust_version = env!("RUST_VERSION_INTERNAL");
     let debug_release = if cfg!(debug_assertions) { "debug" } else { "release" };
 
@@ -72,7 +180,6 @@ pub fn print_version_mode() {
 
     let info = os_info::get();
 
-    #[allow(unused_mut)]
     let mut features: Vec<&str> = vec![];
     #[cfg(feature = "heif")]
     features.push("heif");
@@ -80,15 +187,58 @@ pub fn print_version_mode() {
     features.push("libavif");
     #[cfg(feature = "libraw")]
     features.push("libraw");
+    #[cfg(feature = "fast_image_resize")]
+    features.push("fast_image_resize");
+
+    let mut app_cpu_version = "Baseline";
+    let mut os_cpu_version = "Baseline";
+    if cfg!(target_feature = "sse2") {
+        app_cpu_version = "x86-64-v1 (SSE2)";
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if is_x86_feature_detected!("sse2") {
+        os_cpu_version = "x86-64-v1 (SSE2)";
+    }
+
+    if cfg!(target_feature = "popcnt") {
+        app_cpu_version = "x86-64-v2 (SSE4.2 + POPCNT)";
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if is_x86_feature_detected!("popcnt") {
+        os_cpu_version = "x86-64-v2 (SSE4.2 + POPCNT)";
+    }
+
+    if cfg!(target_feature = "avx2") {
+        app_cpu_version = "x86-64-v3 (AVX2) or x86-64-v4 (AVX-512)";
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if is_x86_feature_detected!("avx2") {
+        os_cpu_version = "x86-64-v3 (AVX2)";
+    }
+
+    // TODO - https://github.com/rust-lang/rust/issues/44839 - remove "or" from above when fixed
+    // Currently this is always false, because cfg!(target_feature = "avx512f") is not working
+    // What is strange, because is_x86_feature_detected!("avx512f") is working
+    if cfg!(target_feature = "avx512f") {
+        app_cpu_version = "x86-64-v4 (AVX-512)";
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if is_x86_feature_detected!("avx512f") {
+        os_cpu_version = "x86-64-v4 (AVX-512)";
+    }
+
+    // TODO - probably needs to add arm and other architectures, need help, because I don't have access to them
 
     info!(
-        "App version: {CZKAWKA_VERSION}, {debug_release} mode, rust {rust_version}, os {} {} [{} {}], {processors} cpu/threads, features({}): [{}]",
+        "{app} version: {CZKAWKA_VERSION}, {debug_release} mode, rust {rust_version}, os {} {} [{} {}], {processors} cpu/threads, features({}): [{}], app cpu version: [{}], os cpu version: [{}]",
         info.os_type(),
         info.version(),
         std::env::consts::ARCH,
         info.bitness(),
         features.len(),
-        features.join(", ")
+        features.join(", "),
+        app_cpu_version,
+        os_cpu_version,
     );
     if cfg!(debug_assertions) {
         warn!("You are running debug version of app which is a lot of slower than release version.");
@@ -96,6 +246,10 @@ pub fn print_version_mode() {
 
     if option_env!("USING_CRANELIFT").is_some() {
         warn!("You are running app with cranelift which is intended only for fast compilation, not runtime performance.");
+    }
+
+    if cfg!(panic = "abort") {
+        warn!("You are running app compiled with panic='abort', which may cause panics when processing untrusted data.");
     }
 }
 
@@ -224,56 +378,43 @@ pub fn remove_folder_if_contains_only_empty_folders(path: impl AsRef<Path>, remo
 }
 
 pub fn open_cache_folder(cache_file_name: &str, save_to_cache: bool, use_json: bool, warnings: &mut Vec<String>) -> Option<((Option<File>, PathBuf), (Option<File>, PathBuf))> {
-    if let Some(proj_dirs) = ProjectDirs::from("pl", "Qarmin", "Czkawka") {
-        let cache_dir = PathBuf::from(proj_dirs.cache_dir());
-        let cache_file = cache_dir.join(cache_file_name);
-        let cache_file_json = cache_dir.join(cache_file_name.replace(".bin", ".json"));
+    let cache_dir = get_config_cache_path()?.cache_folder;
+    let cache_file = cache_dir.join(cache_file_name);
+    let cache_file_json = cache_dir.join(cache_file_name.replace(".bin", ".json"));
 
-        let mut file_handler_default = None;
-        let mut file_handler_json = None;
+    let mut file_handler_default = None;
+    let mut file_handler_json = None;
 
-        if save_to_cache {
-            if cache_dir.exists() {
-                if !cache_dir.is_dir() {
-                    warnings.push(format!("Config dir \"{}\" is a file!", cache_dir.to_string_lossy()));
-                    return None;
-                }
-            } else if let Err(e) = fs::create_dir_all(&cache_dir) {
-                warnings.push(format!("Cannot create config dir \"{}\", reason {e}", cache_dir.to_string_lossy()));
+    if save_to_cache {
+        file_handler_default = Some(match OpenOptions::new().truncate(true).write(true).create(true).open(&cache_file) {
+            Ok(t) => t,
+            Err(e) => {
+                warnings.push(format!("Cannot create or open cache file \"{}\", reason {e}", cache_file.to_string_lossy()));
                 return None;
             }
-
-            file_handler_default = Some(match OpenOptions::new().truncate(true).write(true).create(true).open(&cache_file) {
+        });
+        if use_json {
+            file_handler_json = Some(match OpenOptions::new().truncate(true).write(true).create(true).open(&cache_file_json) {
                 Ok(t) => t,
                 Err(e) => {
-                    warnings.push(format!("Cannot create or open cache file \"{}\", reason {e}", cache_file.to_string_lossy()));
+                    warnings.push(format!("Cannot create or open cache file \"{}\", reason {e}", cache_file_json.to_string_lossy()));
                     return None;
                 }
             });
-            if use_json {
-                file_handler_json = Some(match OpenOptions::new().truncate(true).write(true).create(true).open(&cache_file_json) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        warnings.push(format!("Cannot create or open cache file \"{}\", reason {e}", cache_file_json.to_string_lossy()));
-                        return None;
-                    }
-                });
-            }
+        }
+    } else {
+        if let Ok(t) = OpenOptions::new().read(true).open(&cache_file) {
+            file_handler_default = Some(t);
         } else {
-            if let Ok(t) = OpenOptions::new().read(true).open(&cache_file) {
-                file_handler_default = Some(t);
+            if use_json {
+                file_handler_json = Some(OpenOptions::new().read(true).open(&cache_file_json).ok()?);
             } else {
-                if use_json {
-                    file_handler_json = Some(OpenOptions::new().read(true).open(&cache_file_json).ok()?);
-                } else {
-                    // messages.push(format!("Cannot find or open cache file {cache_file:?}")); // No error or warning
-                    return None;
-                }
+                // messages.push(format!("Cannot find or open cache file {cache_file:?}")); // No error or warning
+                return None;
             }
-        };
-        return Some(((file_handler_default, cache_file), (file_handler_json, cache_file_json)));
-    }
-    None
+        }
+    };
+    Some(((file_handler_default, cache_file), (file_handler_json, cache_file_json)))
 }
 
 pub fn split_path(path: &Path) -> (String, String) {
@@ -292,7 +433,9 @@ pub fn split_path_compare(path_a: &Path, path_b: &Path) -> Ordering {
 }
 
 pub fn create_crash_message(library_name: &str, file_path: &str, home_library_url: &str) -> String {
-    format!("{library_name} library crashed when opening \"{file_path}\", please check if this is fixed with the latest version of {library_name} and if it is not fixed, please report bug here - {home_library_url}")
+    format!(
+        "{library_name} library crashed when opening \"{file_path}\", please check if this is fixed with the latest version of {library_name} and if it is not fixed, please report bug here - {home_library_url}"
+    )
 }
 
 pub fn regex_check(expression_item: &SingleExcludedItem, directory_name: &str) -> bool {
@@ -515,38 +658,43 @@ where
 pub fn prepare_thread_handler_common(
     progress_sender: Option<&Sender<ProgressData>>,
     sstage: CurrentStage,
-    max_value: usize,
+    max_items: usize,
     test_type: (ToolType, CheckingMethod),
-) -> (JoinHandle<()>, Arc<AtomicBool>, Arc<AtomicUsize>, AtomicBool) {
+    max_size: u64,
+) -> (JoinHandle<()>, Arc<AtomicBool>, Arc<AtomicUsize>, AtomicBool, Arc<AtomicU64>) {
     let (tool_type, checking_method) = test_type;
-    assert_ne!(tool_type, ToolType::None, "ToolType::None should not exist");
+    assert_ne!(tool_type, ToolType::None, "Cannot send progress data for ToolType::None");
     let progress_thread_run = Arc::new(AtomicBool::new(true));
-    let atomic_counter = Arc::new(AtomicUsize::new(0));
+    let items_counter = Arc::new(AtomicUsize::new(0));
+    let size_counter = Arc::new(AtomicU64::new(0));
     let check_was_stopped = AtomicBool::new(false);
     let progress_thread_sender = if let Some(progress_sender) = progress_sender {
         let progress_send = progress_sender.clone();
         let progress_thread_run = progress_thread_run.clone();
-        let atomic_counter = atomic_counter.clone();
+        let items_counter = items_counter.clone();
+        let size_counter = size_counter.clone();
         thread::spawn(move || {
             // Use earlier time, to send immediately first message
-            let mut time_since_last_send = SystemTime::now() - Duration::from_secs(10u64);
+            let mut time_since_last_send = Instant::now().checked_sub(Duration::from_secs(10u64)).unwrap_or_else(Instant::now);
 
             loop {
-                if time_since_last_send.elapsed().expect("Cannot count time backwards").as_millis() > SEND_PROGRESS_DATA_TIME_BETWEEN as u128 {
+                if time_since_last_send.elapsed().as_millis() > SEND_PROGRESS_DATA_TIME_BETWEEN as u128 {
                     let progress_data = ProgressData {
                         sstage,
                         checking_method,
                         current_stage_idx: sstage.get_current_stage(),
                         max_stage_idx: tool_type.get_max_stage(checking_method),
-                        entries_checked: atomic_counter.load(atomic::Ordering::Relaxed),
-                        entries_to_check: max_value,
+                        entries_checked: items_counter.load(atomic::Ordering::Relaxed),
+                        entries_to_check: max_items,
+                        bytes_checked: size_counter.load(atomic::Ordering::Relaxed),
+                        bytes_to_check: max_size,
                         tool_type,
                     };
 
                     progress_data.validate();
 
                     progress_send.send(progress_data).expect("Cannot send progress data");
-                    time_since_last_send = SystemTime::now();
+                    time_since_last_send = Instant::now();
                 }
                 if !progress_thread_run.load(atomic::Ordering::Relaxed) {
                     break;
@@ -557,17 +705,27 @@ pub fn prepare_thread_handler_common(
     } else {
         thread::spawn(|| {})
     };
-    (progress_thread_sender, progress_thread_run, atomic_counter, check_was_stopped)
+    (progress_thread_sender, progress_thread_run, items_counter, check_was_stopped, size_counter)
 }
 
 #[inline]
-pub fn check_if_stop_received(stop_receiver: Option<&crossbeam_channel::Receiver<()>>) -> bool {
-    if let Some(stop_receiver) = stop_receiver {
-        if stop_receiver.try_recv().is_ok() {
-            return true;
-        }
+pub fn check_if_stop_received(stop_flag: Option<&Arc<AtomicBool>>) -> bool {
+    if let Some(stop_flag) = stop_flag {
+        return stop_flag.load(atomic::Ordering::Relaxed);
     }
     false
+}
+
+pub fn make_hard_link(src: &Path, dst: &Path) -> io::Result<()> {
+    let dst_dir = dst.parent().ok_or_else(|| Error::other("No parent"))?;
+    let temp = dst_dir.join(TEMP_HARDLINK_FILE);
+    fs::rename(dst, temp.as_path())?;
+    let result = fs::hard_link(src, dst);
+    if result.is_err() {
+        fs::rename(temp.as_path(), dst)?;
+    }
+    fs::remove_file(temp)?;
+    result
 }
 
 #[fun_time(message = "send_info_and_wait_for_ending_all_threads", level = "debug")]
@@ -578,14 +736,66 @@ pub fn send_info_and_wait_for_ending_all_threads(progress_thread_run: &Arc<Atomi
 
 #[cfg(test)]
 mod test {
-    use std::fs;
+    use std::fs::{File, Metadata, read_dir};
     use std::io::Write;
+    #[cfg(target_family = "windows")]
+    use std::os::fs::MetadataExt;
+    #[cfg(target_family = "unix")]
+    use std::os::unix::fs::MetadataExt;
     use std::path::{Path, PathBuf};
+    use std::{fs, io};
 
     use tempfile::tempdir;
 
-    use crate::common::{normalize_windows_path, regex_check, remove_folder_if_contains_only_empty_folders};
+    use crate::common::{make_hard_link, normalize_windows_path, regex_check, remove_folder_if_contains_only_empty_folders};
     use crate::common_items::new_excluded_item;
+
+    #[cfg(target_family = "unix")]
+    fn assert_inode(before: &Metadata, after: &Metadata) {
+        assert_eq!(before.ino(), after.ino());
+    }
+
+    #[cfg(target_family = "windows")]
+    fn assert_inode(_: &Metadata, _: &Metadata) {}
+
+    #[test]
+    fn test_make_hard_link() -> io::Result<()> {
+        let dir = tempfile::Builder::new().tempdir()?;
+        let (src, dst) = (dir.path().join("a"), dir.path().join("b"));
+        File::create(&src)?;
+        let metadata = fs::metadata(&src)?;
+        File::create(&dst)?;
+
+        make_hard_link(&src, &dst)?;
+
+        assert_inode(&metadata, &fs::metadata(&dst)?);
+        assert_eq!(metadata.permissions(), fs::metadata(&dst)?.permissions());
+        assert_eq!(metadata.modified()?, fs::metadata(&dst)?.modified()?);
+        assert_inode(&metadata, &fs::metadata(&src)?);
+        assert_eq!(metadata.permissions(), fs::metadata(&src)?.permissions());
+        assert_eq!(metadata.modified()?, fs::metadata(&src)?.modified()?);
+
+        let mut actual = read_dir(&dir)?.flatten().map(|e| e.path()).collect::<Vec<PathBuf>>();
+        actual.sort_unstable();
+        assert_eq!(vec![src, dst], actual);
+        Ok(())
+    }
+    #[test]
+    fn test_make_hard_link_fails() -> io::Result<()> {
+        let dir = tempfile::Builder::new().tempdir()?;
+        let (src, dst) = (dir.path().join("a"), dir.path().join("b"));
+        File::create(&dst)?;
+        let metadata = fs::metadata(&dst)?;
+
+        assert!(make_hard_link(&src, &dst).is_err());
+
+        assert_inode(&metadata, &fs::metadata(&dst)?);
+        assert_eq!(metadata.permissions(), fs::metadata(&dst)?.permissions());
+        assert_eq!(metadata.modified()?, fs::metadata(&dst)?.modified()?);
+
+        assert_eq!(vec![dst], read_dir(&dir)?.flatten().map(|e| e.path()).collect::<Vec<PathBuf>>());
+        Ok(())
+    }
 
     #[test]
     fn test_remove_folder_if_contains_only_empty_folders() {

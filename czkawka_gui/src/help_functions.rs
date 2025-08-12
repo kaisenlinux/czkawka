@@ -2,22 +2,22 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::BufReader;
-use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::path::{MAIN_SEPARATOR, PathBuf};
 use std::rc::Rc;
 
-use czkawka_core::bad_extensions::BadExtensions;
-use czkawka_core::big_file::BigFile;
-use czkawka_core::broken_files::BrokenFiles;
 use czkawka_core::common_dir_traversal;
 use czkawka_core::common_messages::Messages;
-use czkawka_core::duplicate::DuplicateFinder;
-use czkawka_core::empty_files::EmptyFiles;
-use czkawka_core::empty_folder::EmptyFolder;
-use czkawka_core::invalid_symlinks::InvalidSymlinks;
-use czkawka_core::same_music::SameMusic;
-use czkawka_core::similar_images::SimilarImages;
-use czkawka_core::similar_videos::SimilarVideos;
-use czkawka_core::temporary::Temporary;
+use czkawka_core::tools::bad_extensions::BadExtensions;
+use czkawka_core::tools::big_file::BigFile;
+use czkawka_core::tools::broken_files::BrokenFiles;
+use czkawka_core::tools::duplicate::DuplicateFinder;
+use czkawka_core::tools::empty_files::EmptyFiles;
+use czkawka_core::tools::empty_folder::EmptyFolder;
+use czkawka_core::tools::invalid_symlinks::InvalidSymlinks;
+use czkawka_core::tools::same_music::SameMusic;
+use czkawka_core::tools::similar_images::SimilarImages;
+use czkawka_core::tools::similar_videos::SimilarVideos;
+use czkawka_core::tools::temporary::Temporary;
 use gdk4::gdk_pixbuf::{InterpType, Pixbuf};
 use glib::Error;
 use gtk4::prelude::*;
@@ -28,7 +28,7 @@ use once_cell::sync::OnceCell;
 
 use crate::flg;
 use crate::notebook_enums::{NotebookMainEnum, NotebookUpperEnum};
-use crate::notebook_info::{NotebookObject, NOTEBOOKS_INFO};
+use crate::notebook_info::{NOTEBOOKS_INFO, NotebookObject};
 
 pub const KEY_DELETE: u32 = 119;
 pub const KEY_ENTER: u32 = 36;
@@ -319,6 +319,14 @@ pub fn add_text_to_text_view(text_view: &TextView, string_to_append: &str) {
 
 pub fn set_buttons(hashmap: &mut HashMap<BottomButtonsEnum, bool>, buttons_array: &[Widget], button_names: &[BottomButtonsEnum]) {
     for (index, button) in buttons_array.iter().enumerate() {
+        if button_names[index] == BottomButtonsEnum::Sort {
+            // TODO - sort button is broken, I don't have skills and time to fix it
+            // The problem is that to speedup sorting, we operate on item iters
+            // To fix this, we should just take entire model and sort it, which will be slow in some cases
+            // Alternatively, just current operations on iters should be fixed(I cannot find exact problem)
+            continue;
+        }
+
         if *hashmap.get_mut(&button_names[index]).expect("Invalid button name") {
             button.show();
         } else {
@@ -404,7 +412,7 @@ pub fn get_tree_view_name_from_notebook_upper_enum(notebook_upper_enum: Notebook
     match notebook_upper_enum {
         NotebookUpperEnum::IncludedDirectories => "tree_view_upper_included_directories",
         NotebookUpperEnum::ExcludedDirectories => "tree_view_upper_excluded_directories",
-        _ => panic!(),
+        NotebookUpperEnum::ItemsConfiguration => panic!(),
     }
 }
 
@@ -481,9 +489,6 @@ pub fn clean_invalid_headers(model: &ListStore, column_header: i32, column_path:
                     }
                 }
             }
-            for tree_path in vec_tree_path_to_delete.iter().rev() {
-                model.remove(&model.iter(tree_path).expect("Using invalid tree_path"));
-            }
         }
         // Non empty means that header points at reference folder
         else {
@@ -529,9 +534,9 @@ pub fn clean_invalid_headers(model: &ListStore, column_header: i32, column_path:
                     }
                 }
             }
-            for tree_path in vec_tree_path_to_delete.iter().rev() {
-                model.remove(&model.iter(tree_path).expect("Using invalid tree_path"));
-            }
+        }
+        for tree_path in vec_tree_path_to_delete.iter().rev() {
+            model.remove(&model.iter(tree_path).expect("Using invalid tree_path"));
         }
     }
 
@@ -628,7 +633,7 @@ pub fn resize_pixbuf_dimension(pixbuf: &Pixbuf, requested_size: (i32, i32), inte
             new_size = (std::cmp::max(new_size.0, 1), std::cmp::max(new_size.1, 1));
         }
         Ordering::Equal => {
-            new_size = (requested_size.0, requested_size.1);
+            new_size = requested_size;
             new_size = (std::cmp::max(new_size.0, 1), std::cmp::max(new_size.1, 1));
         }
     }
@@ -744,6 +749,8 @@ pub fn get_pixbuf_from_dynamic_image(dynamic_image: &DynamicImage) -> Result<Pix
     let mut output = Vec::new();
     JpegEncoder::new(&mut output).encode_image(dynamic_image).expect("Failed to encode jpeg image"); // TODO remove here unwrap
     let arra;
+    // TODO - this code can really be broken, but I couldn't find better solution
+    #[allow(static_mut_refs)]
     unsafe {
         IMAGE_PREVIEW_ARRAY.take();
         IMAGE_PREVIEW_ARRAY.set(output).expect("Setting image preview array failed");
@@ -806,8 +813,8 @@ pub fn scale_step_function(scale: &Scale, _scroll_type: ScrollType, value: f64) 
 
 #[cfg(test)]
 mod test {
-    use glib::types::Type;
     use glib::Value;
+    use glib::types::Type;
     use gtk4::prelude::*;
     use gtk4::{Orientation, TreeView};
     use image::DynamicImage;

@@ -1,5 +1,5 @@
-use i18n_embed::fluent::{fluent_language_loader, FluentLanguageLoader};
 use i18n_embed::LanguageLoader;
+use i18n_embed::fluent::{FluentLanguageLoader, fluent_language_loader};
 use once_cell::sync::Lazy;
 use rust_embed::RustEmbed;
 
@@ -21,7 +21,7 @@ macro_rules! flk {
         i18n_embed_fl::fl!($crate::localizer_krokiet::LANGUAGE_LOADER_GUI, $message_id)
     }};
 
-    ($message_id:literal, $($args:expr),*) => {{
+    ($message_id:literal, $($args:expr_2021),*) => {{
         i18n_embed_fl::fl!($crate::localizer_krokiet::LANGUAGE_LOADER_GUI, $message_id, $($args), *)
     }};
 }

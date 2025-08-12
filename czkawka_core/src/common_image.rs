@@ -6,8 +6,8 @@ use std::ffi::OsString;
 use std::fs::{DirEntry, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::{atomic, Arc};
-use std::thread::{sleep, JoinHandle};
+use std::sync::{Arc, atomic};
+use std::thread::{JoinHandle, sleep};
 use std::time::{Duration, Instant, SystemTime};
 use std::{fs, panic, thread};
 
@@ -19,53 +19,35 @@ use handsome_logger::{ColorChoice, ConfigBuilder, TerminalMode};
 use image::{DynamicImage, ImageBuffer, Rgb, Rgba};
 use imagepipe::{ImageSource, Pipeline};
 use jxl_oxide::image::BitDepth;
+use jxl_oxide::integration::JxlDecoder;
 use jxl_oxide::{JxlImage, PixelFormat};
 #[cfg(feature = "heif")]
 use libheif_rs::{ColorSpace, HeifContext, RgbChroma};
 #[cfg(feature = "libraw")]
 use libraw::Processor;
-use log::{debug, error, info, warn, LevelFilter, Record};
+use log::{LevelFilter, Record, debug, error, info, trace, warn};
+use nom_exif::{ExifIter, ExifTag, MediaParser, MediaSource};
 use rawloader::RawLoader;
 use symphonia::core::conv::IntoSample;
 
 use crate::common;
-use crate::common::{create_crash_message, HEIC_EXTENSIONS, IMAGE_RS_EXTENSIONS, IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS, JXL_IMAGE_EXTENSIONS, RAW_IMAGE_EXTENSIONS};
+use crate::common::{HEIC_EXTENSIONS, IMAGE_RS_EXTENSIONS, IMAGE_RS_SIMILAR_IMAGES_EXTENSIONS, JXL_IMAGE_EXTENSIONS, RAW_IMAGE_EXTENSIONS, create_crash_message};
 // #[cfg(feature = "heif")]
 // use libheif_rs::LibHeif;
 
-// TODO this code is ugly - this should exists in image-rs or be taken from official example of jxl-oxide
-// Its presence offends everything good in this world
 pub fn get_jxl_image(path: &str) -> anyhow::Result<DynamicImage> {
-    let buf_reader = std::io::BufReader::new(File::open(path)?);
+    let file = File::open(path)?;
+    let decoder = JxlDecoder::new(file)?;
 
-    let decoder = JxlImage::builder().read(buf_reader).map_err(|e| anyhow::anyhow!("Failed to read jxl file {e}"))?;
-    let width = decoder.width();
-    let height = decoder.height();
-    let frame = decoder.render_frame(0).map_err(|e| anyhow::anyhow!("Failed to render jxl frame {e}"))?;
-    let planar = &frame.image_planar();
-    let pixfmt = decoder.pixel_format();
-    let bits_per_sample = decoder.image_header().metadata.bit_depth;
+    let image = DynamicImage::from_decoder(decoder)?;
 
-    if bits_per_sample.bits_per_sample() == 8 && pixfmt == PixelFormat::Rgb && planar.len() == 3 {
-        let zips = planar[0].buf().iter().zip(planar[1].buf().iter()).zip(planar[2].buf().iter());
-        let pixels = zips.flat_map(|((r, g), b)| [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]).collect::<Vec<_>>();
-        let data = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(width, height, pixels).ok_or_else(|| anyhow::anyhow!("Failed to create rgb image buffer from jxl data"))?;
-        Ok(DynamicImage::ImageRgb8(data))
-    } else if bits_per_sample.bits_per_sample() == 8 && pixfmt == PixelFormat::Rgba && planar.len() == 4 {
-        let zips = planar[0].buf().iter().zip(planar[1].buf().iter()).zip(planar[2].buf().iter()).zip(planar[3].buf().iter());
-        let pixels = zips
-            .flat_map(|(((r, g), b), a)| [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, (a * 255.0) as u8])
-            .collect::<Vec<_>>();
-        let data = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_vec(width, height, pixels).ok_or_else(|| anyhow::anyhow!("Failed to create rgba image buffer from jxl data"))?;
-        Ok(DynamicImage::ImageRgba8(data))
-    } else {
-        return Err(anyhow::anyhow!("Unsupported number of planes: {}", planar.len()));
-    }
+    Ok(image)
 }
 
 pub fn get_dynamic_image_from_path(path: &str) -> Result<DynamicImage, String> {
     let path_lower = Path::new(path).extension().unwrap_or_default().to_string_lossy().to_lowercase();
 
+    trace!("decoding file {}", path);
     let res = panic::catch_unwind(|| {
         if HEIC_EXTENSIONS.iter().any(|ext| path_lower.ends_with(ext)) {
             #[cfg(feature = "heif")]
@@ -87,12 +69,24 @@ pub fn get_dynamic_image_from_path(path: &str) -> Result<DynamicImage, String> {
 
     if let Ok(res) = res {
         match res {
-            Ok(t) => Ok(t),
+            Ok(t) => {
+                let rotation = get_rotation_from_exif(path).unwrap_or(None);
+                match rotation {
+                    Some(ExifOrientation::Normal) | None => Ok(t),
+                    Some(ExifOrientation::MirrorHorizontal) => Ok(t.fliph()),
+                    Some(ExifOrientation::Rotate180) => Ok(t.rotate180()),
+                    Some(ExifOrientation::MirrorVertical) => Ok(t.flipv()),
+                    Some(ExifOrientation::MirrorHorizontalAndRotate270CW) => Ok(t.fliph().rotate270()),
+                    Some(ExifOrientation::Rotate90CW) => Ok(t.rotate90()),
+                    Some(ExifOrientation::MirrorHorizontalAndRotate90CW) => Ok(t.fliph().rotate90()),
+                    Some(ExifOrientation::Rotate270CW) => Ok(t.rotate270()),
+                }
+            }
             Err(e) => Err(format!("Cannot open image file \"{path}\": {e}")),
         }
     } else {
         let message = create_crash_message("Image-rs or libraw-rs or jxl-oxide", path, "https://github.com/image-rs/image/issues");
-        println!("{message}");
+        error!("{message}");
         Err(message)
     }
 }
@@ -168,7 +162,7 @@ pub fn get_raw_image(path: impl AsRef<Path> + std::fmt::Debug) -> Result<Dynamic
     times.push(("After creating dynamic image", start_timer.elapsed()));
 
     let str_timer = times.into_iter().map(|(name, time)| format!("{name}: {time:?}")).collect::<Vec<_>>().join(", ");
-    debug!("Loading raw image --- {str_timer}");
+    trace!("Loading raw image --- {str_timer}");
     Ok(res)
 }
 
@@ -184,4 +178,51 @@ pub fn check_if_can_display_image(path: &str) -> bool {
     let allowed_extensions = &[IMAGE_RS_EXTENSIONS, RAW_IMAGE_EXTENSIONS, JXL_IMAGE_EXTENSIONS].concat();
 
     allowed_extensions.iter().any(|ext| extension_str.ends_with(ext))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExifOrientation {
+    Normal,
+    MirrorHorizontal,
+    Rotate180,
+    MirrorVertical,
+    MirrorHorizontalAndRotate270CW,
+    Rotate90CW,
+    MirrorHorizontalAndRotate90CW,
+    Rotate270CW,
+}
+
+pub fn get_rotation_from_exif(path: &str) -> Result<Option<ExifOrientation>, nom_exif::Error> {
+    let res = panic::catch_unwind(|| {
+        let mut parser = MediaParser::new();
+        let ms = MediaSource::file_path(path)?;
+        if !ms.has_exif() {
+            return Ok(None);
+        }
+        let exif_iter: ExifIter = parser.parse(ms)?;
+        for exif_entry in exif_iter {
+            if exif_entry.tag() == Some(ExifTag::Orientation) {
+                if let Some(value) = exif_entry.get_value() {
+                    return match value.to_string().as_str() {
+                        "1" => Ok(Some(ExifOrientation::Normal)),
+                        "2" => Ok(Some(ExifOrientation::MirrorHorizontal)),
+                        "3" => Ok(Some(ExifOrientation::Rotate180)),
+                        "4" => Ok(Some(ExifOrientation::MirrorVertical)),
+                        "5" => Ok(Some(ExifOrientation::MirrorHorizontalAndRotate270CW)),
+                        "6" => Ok(Some(ExifOrientation::Rotate90CW)),
+                        "7" => Ok(Some(ExifOrientation::MirrorHorizontalAndRotate90CW)),
+                        "8" => Ok(Some(ExifOrientation::Rotate270CW)),
+                        _ => Ok(None),
+                    };
+                }
+            }
+        }
+        Ok(None)
+    });
+
+    res.unwrap_or_else(|_| {
+        let message = create_crash_message("nom-exif", path, "https://github.com/mindeng/nom-exif");
+        error!("{message}");
+        Err(nom_exif::Error::IOError(std::io::Error::other("Panic in get_rotation_from_exif")))
+    })
 }

@@ -3,15 +3,16 @@ use std::fs;
 use std::fs::DirEntry;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Sender;
 use fun_time::fun_time;
 use log::debug;
 use rayon::prelude::*;
 
-use crate::common::{check_if_stop_received, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads};
-use crate::common_dir_traversal::{common_get_entry_data, common_get_metadata_dir, common_read_dir, get_modified_time, ToolType};
+use crate::common::{WorkContinueStatus, check_if_stop_received, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads};
+use crate::common_dir_traversal::{ToolType, common_get_entry_data, common_get_metadata_dir, common_read_dir, get_modified_time};
 use crate::common_directory::Directories;
 use crate::common_items::ExcludedItems;
 use crate::common_tool::{CommonData, CommonToolData, DeleteMethod};
@@ -70,9 +71,9 @@ impl EmptyFolder {
     }
 
     #[fun_time(message = "find_empty_folders", level = "info")]
-    pub fn find_empty_folders(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) {
+    pub fn find_empty_folders(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) {
         self.prepare_items();
-        if !self.check_for_empty_folders(stop_receiver, progress_sender) {
+        if self.check_for_empty_folders(stop_flag, progress_sender) == WorkContinueStatus::Stop {
             self.common_data.stopped_search = true;
             return;
         }
@@ -102,11 +103,11 @@ impl EmptyFolder {
     }
 
     #[fun_time(message = "check_for_empty_folders", level = "debug")]
-    fn check_for_empty_folders(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn check_for_empty_folders(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         let mut folders_to_check: Vec<PathBuf> = self.common_data.directories.included_directories.clone();
 
-        let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::CollectingFiles, 0, self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::CollectingFiles, 0, self.get_test_type(), 0);
 
         let excluded_items = self.common_data.excluded_items.clone();
         let directories = self.common_data.directories.clone();
@@ -125,9 +126,9 @@ impl EmptyFolder {
         }
 
         while !folders_to_check.is_empty() {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
 
             let segments: Vec<_> = folders_to_check
@@ -173,7 +174,7 @@ impl EmptyFolder {
                     }
                     if counter > 0 {
                         // Increase counter in batch, because usually it may be slow to add multiple times atomic value
-                        atomic_counter.fetch_add(counter, Ordering::Relaxed);
+                        items_counter.fetch_add(counter, Ordering::Relaxed);
                     }
 
                     (dir_result, warnings, non_empty_folder, folder_entries_list)
@@ -219,7 +220,7 @@ impl EmptyFolder {
 
         debug!("Found {} empty folders.", self.empty_folder_list.len());
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-        true
+        WorkContinueStatus::Continue
     }
 
     pub(crate) fn set_as_not_empty_folder(folder_entries: &mut HashMap<String, FolderEntry>, current_folder: &str) {

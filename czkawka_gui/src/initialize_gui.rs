@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use czkawka_core::common_image::get_dynamic_image_from_path;
-use czkawka_core::similar_images::SIMILAR_VALUES;
-use czkawka_core::similar_videos::MAX_TOLERANCE;
+use czkawka_core::tools::similar_images::SIMILAR_VALUES;
+use czkawka_core::tools::similar_videos::MAX_TOLERANCE;
 use gdk4::gdk_pixbuf::Pixbuf;
 use glib::types::Type;
 use gtk4::gdk_pixbuf::InterpType;
@@ -265,10 +265,10 @@ pub fn initialize_gui(gui_data: &GuiData) {
     //// Window progress
     {
         let window_progress = gui_data.progress_window.window_progress.clone();
-        let stop_sender = gui_data.stop_sender.clone();
+        let stop_flag = gui_data.stop_flag.clone();
 
         window_progress.connect_close_request(move |_| {
-            stop_sender.send(()).expect("Failed to send stop signal");
+            stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
             glib::Propagation::Stop
         });
     }
@@ -507,7 +507,7 @@ fn show_preview(
                 let image = match get_dynamic_image_from_path(&file_name) {
                     Ok(t) => t,
                     Err(e) => {
-                        add_text_to_text_view(text_view_errors, flg!("preview_image_opening_failure", name = file_name, reason = e.to_string()).as_str());
+                        add_text_to_text_view(text_view_errors, flg!("preview_image_opening_failure", name = file_name, reason = e).as_str());
                         break 'dir;
                     }
                 };

@@ -7,7 +7,7 @@ files from your computer.
 
 ## Features
 
-- Written in memory-safe Rust
+- Written in memory-safe Rust - almost 100% unsafe code free
 - Amazingly fast - due to using more or less advanced algorithms and multithreading
 - Free, Open Source without ads
 - Multiplatform - works on Linux, Windows, macOS, FreeBSD and many more
@@ -33,10 +33,9 @@ files from your computer.
 
 ![Krokiet](https://github.com/user-attachments/assets/906cbbc3-f011-4306-81da-9e4e53b49a9f)
 
-Changelog and new releases can be found in [Github releases](https://github.com/qarmin/czkawka/releases) or
-in [CHANGELOG.md](CHANGELOG.md).
+Changelog about each version can be found in [CHANGELOG.md](CHANGELOG.md).
 
-More about latest version, you can find [in Medium article](https://medium.com/@qarmin/czkawka-7-0-a465036e8788)
+New releases can be found in [Github releases](https://github.com/qarmin/czkawka/releases) and nightly builds also in [Nightly releases](https://github.com/qarmin/czkawka/releases/tag/Nightly)
 
 ## Usage, installation, compilation, requirements, license
 
@@ -91,8 +90,7 @@ There are many similar applications to Czkawka on the Internet, which do some th
 - [DupeGuru](https://github.com/arsenetar/dupeguru) - Many options to customize; great photo compare tool
 - [FSlint](https://github.com/pixelb/fslint) - A little outdated, but still have some tools not available in Czkawka
 - [AntiDupl.NET](https://github.com/ermig1979/AntiDupl) - Shows a lot of metadata of compared images
-- [Video Duplicate Finder](https://github.com/0x90d/videoduplicatefinder) - Finds similar videos(surprising, isn't it),
-  supports video thumbnails
+- [Video Duplicate Finder](https://github.com/0x90d/videoduplicatefinder) - Finds similar videos(surprising, isn't it), supports video thumbnails
 
 ### CLI
 

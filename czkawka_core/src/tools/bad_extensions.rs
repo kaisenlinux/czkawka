@@ -2,17 +2,17 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::prelude::*;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Sender;
 use fun_time::fun_time;
 use log::debug;
 use mime_guess::get_mime_extensions;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::common::{check_if_stop_received, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads};
+use crate::common::{WorkContinueStatus, check_if_stop_received, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads};
 use crate::common_dir_traversal::{DirTraversalBuilder, DirTraversalResult, FileEntry, ToolType};
 use crate::common_tool::{CommonData, CommonToolData};
 use crate::common_traits::*;
@@ -231,13 +231,13 @@ impl BadExtensions {
     }
 
     #[fun_time(message = "find_bad_extensions_files", level = "info")]
-    pub fn find_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) {
+    pub fn find_bad_extensions_files(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) {
         self.prepare_items();
-        if !self.check_files(stop_receiver, progress_sender) {
+        if self.check_files(stop_flag, progress_sender) == WorkContinueStatus::Stop {
             self.common_data.stopped_search = true;
             return;
         }
-        if !self.look_for_bad_extensions_files(stop_receiver, progress_sender) {
+        if self.look_for_bad_extensions_files(stop_flag, progress_sender) == WorkContinueStatus::Stop {
             self.common_data.stopped_search = true;
             return;
         }
@@ -245,11 +245,11 @@ impl BadExtensions {
     }
 
     #[fun_time(message = "check_files", level = "debug")]
-    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn check_files(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         let result = DirTraversalBuilder::new()
             .common_data(&self.common_data)
             .group_by(|_fe| ())
-            .stop_receiver(stop_receiver)
+            .stop_flag(stop_flag)
             .progress_sender(progress_sender)
             .build()
             .run();
@@ -259,21 +259,21 @@ impl BadExtensions {
                 self.files_to_check = grouped_file_entries.into_values().flatten().collect();
                 self.common_data.text_messages.warnings.extend(warnings);
 
-                true
+                WorkContinueStatus::Continue
             }
 
-            DirTraversalResult::Stopped => false,
+            DirTraversalResult::Stopped => WorkContinueStatus::Stop,
         }
     }
 
     #[fun_time(message = "look_for_bad_extensions_files", level = "debug")]
-    fn look_for_bad_extensions_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn look_for_bad_extensions_files(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         if self.files_to_check.is_empty() {
-            return true;
+            return WorkContinueStatus::Continue;
         }
 
-        let (progress_thread_handle, progress_thread_run, atomic_counter, check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::BadExtensionsChecking, self.files_to_check.len(), self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, items_counter, check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::BadExtensionsChecking, self.files_to_check.len(), self.get_test_type(), 0);
 
         let files_to_check = mem::take(&mut self.files_to_check);
 
@@ -282,77 +282,76 @@ impl BadExtensions {
             hashmap_workarounds.entry(found).or_default().push(proper);
         }
 
-        self.bad_extensions_files = self.verify_extensions(files_to_check, &atomic_counter, stop_receiver, &check_was_stopped, &hashmap_workarounds);
+        self.bad_extensions_files = self.verify_extensions(files_to_check, &items_counter, stop_flag, &check_was_stopped, &hashmap_workarounds);
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
 
         // Break if stop was clicked
         if check_was_stopped.load(Ordering::Relaxed) {
-            return false;
+            return WorkContinueStatus::Stop;
         }
 
         self.information.number_of_files_with_bad_extension = self.bad_extensions_files.len();
 
         debug!("Found {} files with invalid extension.", self.information.number_of_files_with_bad_extension);
 
-        true
+        WorkContinueStatus::Continue
+    }
+
+    fn verify_extension_of_file(&self, file_entry: FileEntry, hashmap_workarounds: &HashMap<&str, Vec<&str>>) -> Option<BadFileEntry> {
+        // Check what exactly content file contains
+        let kind = match infer::get_from_path(&file_entry.path) {
+            Ok(k) => k?,
+            Err(_) => return None,
+        };
+        let proper_extension = kind.extension();
+
+        let current_extension = self.get_and_validate_extension(&file_entry, proper_extension)?;
+
+        // Check for all extensions that file can use(not sure if it is worth to do it)
+        let (mut all_available_extensions, valid_extensions) = self.check_for_all_extensions_that_file_can_use(hashmap_workarounds, &current_extension, proper_extension);
+
+        if all_available_extensions.is_empty() {
+            // Not found any extension
+            return None;
+        } else if current_extension.is_empty() {
+            if !self.params.include_files_without_extension {
+                return None;
+            }
+        } else if all_available_extensions.take(&current_extension).is_some() {
+            // Found proper extension
+            return None;
+        }
+
+        Some(BadFileEntry {
+            path: file_entry.path,
+            modified_date: file_entry.modified_date,
+            size: file_entry.size,
+            current_extension,
+            proper_extensions_group: valid_extensions,
+            proper_extension: proper_extension.to_string(),
+        })
     }
 
     #[fun_time(message = "verify_extensions", level = "debug")]
     fn verify_extensions(
         &self,
         files_to_check: Vec<FileEntry>,
-        atomic_counter: &Arc<AtomicUsize>,
-        stop_receiver: Option<&Receiver<()>>,
+        items_counter: &Arc<AtomicUsize>,
+        stop_flag: Option<&Arc<AtomicBool>>,
         check_was_stopped: &AtomicBool,
         hashmap_workarounds: &HashMap<&str, Vec<&str>>,
     ) -> Vec<BadFileEntry> {
         files_to_check
             .into_par_iter()
             .map(|file_entry| {
-                atomic_counter.fetch_add(1, Ordering::Relaxed);
-                if check_if_stop_received(stop_receiver) {
+                if check_if_stop_received(stop_flag) {
                     check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
                 }
-
-                // Check what exactly content file contains
-                let kind = match infer::get_from_path(&file_entry.path) {
-                    Ok(k) => match k {
-                        Some(t) => t,
-                        None => return Some(None),
-                    },
-                    Err(_) => return Some(None),
-                };
-                let proper_extension = kind.extension();
-
-                let Some(current_extension) = self.get_and_validate_extension(&file_entry, proper_extension) else {
-                    return Some(None);
-                };
-
-                // Check for all extensions that file can use(not sure if it is worth to do it)
-                let (mut all_available_extensions, valid_extensions) = self.check_for_all_extensions_that_file_can_use(hashmap_workarounds, &current_extension, proper_extension);
-
-                if all_available_extensions.is_empty() {
-                    // Not found any extension
-                    return Some(None);
-                } else if current_extension.is_empty() {
-                    if !self.params.include_files_without_extension {
-                        return Some(None);
-                    }
-                } else if all_available_extensions.take(&current_extension).is_some() {
-                    // Found proper extension
-                    return Some(None);
-                }
-
-                Some(Some(BadFileEntry {
-                    path: file_entry.path,
-                    modified_date: file_entry.modified_date,
-                    size: file_entry.size,
-                    current_extension,
-                    proper_extensions_group: valid_extensions,
-                    proper_extension: proper_extension.to_string(),
-                }))
+                let res = self.verify_extension_of_file(file_entry, hashmap_workarounds);
+                items_counter.fetch_add(1, Ordering::Relaxed);
+                Some(res)
             })
             .while_some()
             .flatten()

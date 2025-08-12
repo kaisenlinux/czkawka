@@ -2,31 +2,31 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::{mem, panic};
 
 use anyhow::Context;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Sender;
 use fun_time::fun_time;
-use humansize::{format_size, BINARY};
+use humansize::{BINARY, format_size};
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::prelude::*;
 use lofty::read_from;
-use log::debug;
+use log::{debug, error};
 use rayon::prelude::*;
-use rusty_chromaprint::{match_fingerprints, Configuration, Fingerprinter};
+use rusty_chromaprint::{Configuration, Fingerprinter, match_fingerprints};
 use serde::{Deserialize, Serialize};
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use crate::common::{
-    check_if_stop_received, create_crash_message, delete_files_custom, filter_reference_folders_generic, prepare_thread_handler_common, send_info_and_wait_for_ending_all_threads,
-    AUDIO_FILES_EXTENSIONS,
+    AUDIO_FILES_EXTENSIONS, WorkContinueStatus, check_if_stop_received, create_crash_message, delete_files_custom, filter_reference_folders_generic, prepare_thread_handler_common,
+    send_info_and_wait_for_ending_all_threads,
 };
 use crate::common_cache::{extract_loaded_cache, get_similar_music_cache_file, load_cache_from_file_generalized_by_path, save_cache_to_file_generalized};
 use crate::common_dir_traversal::{CheckingMethod, DirTraversalBuilder, DirTraversalResult, FileEntry, ToolType};
@@ -162,34 +162,34 @@ impl SameMusic {
     }
 
     #[fun_time(message = "find_same_music", level = "info")]
-    pub fn find_same_music(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) {
+    pub fn find_same_music(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) {
         self.prepare_items();
         self.common_data.use_reference_folders = !self.common_data.directories.reference_directories.is_empty();
-        if !self.check_files(stop_receiver, progress_sender) {
+        if self.check_files(stop_flag, progress_sender) == WorkContinueStatus::Stop {
             self.common_data.stopped_search = true;
             return;
         }
         match self.params.check_type {
             CheckingMethod::AudioTags => {
-                if !self.read_tags(stop_receiver, progress_sender) {
+                if self.read_tags(stop_flag, progress_sender) == WorkContinueStatus::Stop {
                     self.common_data.stopped_search = true;
                     return;
                 }
-                if !self.check_for_duplicate_tags(stop_receiver, progress_sender) {
+                if self.check_for_duplicate_tags(stop_flag, progress_sender) == WorkContinueStatus::Stop {
                     self.common_data.stopped_search = true;
                     return;
                 }
             }
             CheckingMethod::AudioContent => {
-                if !self.read_tags(stop_receiver, progress_sender) {
+                if self.read_tags(stop_flag, progress_sender) == WorkContinueStatus::Stop {
                     self.common_data.stopped_search = true;
                     return;
                 }
-                if !self.calculate_fingerprint(stop_receiver, progress_sender) {
+                if self.calculate_fingerprint(stop_flag, progress_sender) == WorkContinueStatus::Stop {
                     self.common_data.stopped_search = true;
                     return;
                 }
-                if !self.check_for_duplicate_fingerprints(stop_receiver, progress_sender) {
+                if self.check_for_duplicate_fingerprints(stop_flag, progress_sender) == WorkContinueStatus::Stop {
                     self.common_data.stopped_search = true;
                     return;
                 }
@@ -201,15 +201,15 @@ impl SameMusic {
     }
 
     #[fun_time(message = "check_files", level = "debug")]
-    fn check_files(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn check_files(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         self.common_data.extensions.set_and_validate_allowed_extensions(AUDIO_FILES_EXTENSIONS);
         if !self.common_data.extensions.set_any_extensions() {
-            return true;
+            return WorkContinueStatus::Continue;
         }
 
         let result = DirTraversalBuilder::new()
             .group_by(|_fe| ())
-            .stop_receiver(stop_receiver)
+            .stop_flag(stop_flag)
             .progress_sender(progress_sender)
             .common_data(&self.common_data)
             .checking_method(self.params.check_type)
@@ -225,10 +225,10 @@ impl SameMusic {
                     .collect();
                 self.common_data.text_messages.warnings.extend(warnings);
                 debug!("check_files - Found {} music files.", self.music_to_check.len());
-                true
+                WorkContinueStatus::Continue
             }
 
-            DirTraversalResult::Stopped => false,
+            DirTraversalResult::Stopped => WorkContinueStatus::Stop,
         }
     }
 
@@ -283,9 +283,9 @@ impl SameMusic {
     }
 
     #[fun_time(message = "calculate_fingerprint", level = "debug")]
-    fn calculate_fingerprint(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn calculate_fingerprint(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         if self.music_entries.is_empty() {
-            return true;
+            return WorkContinueStatus::Continue;
         }
 
         // We only calculate fingerprints, for files with similar titles
@@ -303,37 +303,45 @@ impl SameMusic {
             self.music_to_check = mem::take(&mut self.music_entries).into_iter().map(|e| (e.path.to_string_lossy().to_string(), e)).collect();
         }
 
-        let (progress_thread_handle, progress_thread_run, _atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheLoadingFingerprints, 0, self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, _items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheLoadingFingerprints, 0, self.get_test_type(), 0);
 
         let (loaded_hash_map, records_already_cached, non_cached_files_to_check) = self.load_cache(false);
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-        if check_if_stop_received(stop_receiver) {
-            return false;
+        if check_if_stop_received(stop_flag) {
+            return WorkContinueStatus::Stop;
         }
 
-        let (progress_thread_handle, progress_thread_run, atomic_counter, check_was_stopped) = prepare_thread_handler_common(
+        let (progress_thread_handle, progress_thread_run, items_counter, check_was_stopped, size_counter) = prepare_thread_handler_common(
             progress_sender,
             CurrentStage::SameMusicCalculatingFingerprints,
             non_cached_files_to_check.len(),
             self.get_test_type(),
+            non_cached_files_to_check.values().map(|e| e.size).sum::<u64>(),
         );
         let configuration = &self.hash_preset_config;
+
+        let non_cached_files_to_check = non_cached_files_to_check.into_iter().collect::<Vec<_>>();
 
         debug!("calculate_fingerprint - starting fingerprinting");
         let mut vec_file_entry = non_cached_files_to_check
             .into_par_iter()
+            .with_max_len(2)
             .map(|(path, mut music_entry)| {
-                atomic_counter.fetch_add(1, Ordering::Relaxed);
-                if check_if_stop_received(stop_receiver) {
+                if check_if_stop_received(stop_flag) {
                     check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
                 }
 
-                let Ok(fingerprint) = calc_fingerprint_helper(path, configuration) else {
+                let res = calc_fingerprint_helper(path, configuration);
+                size_counter.fetch_add(music_entry.size, Ordering::Relaxed);
+                items_counter.fetch_add(1, Ordering::Relaxed);
+
+                let Ok(fingerprint) = res else {
                     return Some(None);
                 };
+
                 music_entry.fingerprint = fingerprint;
 
                 Some(Some(music_entry))
@@ -344,8 +352,8 @@ impl SameMusic {
         debug!("calculate_fingerprint - ended fingerprinting");
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-        let (progress_thread_handle, progress_thread_run, _atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheSavingFingerprints, 0, self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, _items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheSavingFingerprints, 0, self.get_test_type(), 0);
 
         // Just connect loaded results with already calculated
         vec_file_entry.extend(records_already_cached.into_values());
@@ -356,46 +364,49 @@ impl SameMusic {
 
         // Break if stop was clicked after saving to cache
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-        if check_was_stopped.load(Ordering::Relaxed) || check_if_stop_received(stop_receiver) {
-            return false;
+        if check_was_stopped.load(Ordering::Relaxed) || check_if_stop_received(stop_flag) {
+            return WorkContinueStatus::Stop;
         }
-        true
+        WorkContinueStatus::Continue
     }
 
     #[fun_time(message = "read_tags", level = "debug")]
-    fn read_tags(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn read_tags(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         if self.music_to_check.is_empty() {
-            return true;
+            return WorkContinueStatus::Continue;
         }
 
-        let (progress_thread_handle, progress_thread_run, _atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheLoadingTags, 0, self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, _items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheLoadingTags, 0, self.get_test_type(), 0);
 
         let (loaded_hash_map, records_already_cached, non_cached_files_to_check) = self.load_cache(true);
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-        if check_if_stop_received(stop_receiver) {
-            return false;
+        if check_if_stop_received(stop_flag) {
+            return WorkContinueStatus::Stop;
         }
 
-        let (progress_thread_handle, progress_thread_run, atomic_counter, check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicReadingTags, non_cached_files_to_check.len(), self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, items_counter, check_was_stopped, _size_counter) = prepare_thread_handler_common(
+            progress_sender,
+            CurrentStage::SameMusicReadingTags,
+            non_cached_files_to_check.len(),
+            self.get_test_type(),
+            0,
+        );
 
         debug!("read_tags - starting reading tags");
         // Clean for duplicate files
         let mut vec_file_entry = non_cached_files_to_check
             .into_par_iter()
-            .map(|(path, mut music_entry)| {
-                atomic_counter.fetch_add(1, Ordering::Relaxed);
-                if check_if_stop_received(stop_receiver) {
+            .map(|(path, music_entry)| {
+                if check_if_stop_received(stop_flag) {
                     check_was_stopped.store(true, Ordering::Relaxed);
                     return None;
                 }
-                if read_single_file_tags(&path, &mut music_entry) {
-                    Some(Some(music_entry))
-                } else {
-                    Some(None)
-                }
+
+                let res = read_single_file_tags(&path, music_entry);
+                items_counter.fetch_add(1, Ordering::Relaxed);
+                Some(res)
             })
             .while_some()
             .flatten()
@@ -403,8 +414,8 @@ impl SameMusic {
         debug!("read_tags - ended reading tags");
 
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-        let (progress_thread_handle, progress_thread_run, _atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheSavingTags, 0, self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, _items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicCacheSavingTags, 0, self.get_test_type(), 0);
 
         // Just connect loaded results with already calculated
         vec_file_entry.extend(records_already_cached.into_values());
@@ -416,67 +427,67 @@ impl SameMusic {
         // Break if stop was clicked after saving to cache
         send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
         if check_was_stopped.load(Ordering::Relaxed) {
-            return false;
+            return WorkContinueStatus::Stop;
         }
 
-        true
+        WorkContinueStatus::Continue
     }
 
     #[fun_time(message = "check_for_duplicate_tags", level = "debug")]
-    fn check_for_duplicate_tags(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn check_for_duplicate_tags(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         if self.music_entries.is_empty() {
-            return true;
+            return WorkContinueStatus::Continue;
         }
-        let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicComparingTags, self.music_entries.len(), self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicComparingTags, self.music_entries.len(), self.get_test_type(), 0);
 
         let mut old_duplicates: Vec<Vec<MusicEntry>> = vec![self.music_entries.clone()];
         let mut new_duplicates: Vec<Vec<MusicEntry>> = Vec::new();
 
         if (self.params.music_similarity & MusicSimilarity::TRACK_TITLE) == MusicSimilarity::TRACK_TITLE {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
 
-            old_duplicates = self.check_music_item(old_duplicates, &atomic_counter, |fe| &fe.track_title, self.params.approximate_comparison);
+            old_duplicates = self.check_music_item(old_duplicates, &items_counter, |fe| &fe.track_title, self.params.approximate_comparison);
         }
         if (self.params.music_similarity & MusicSimilarity::TRACK_ARTIST) == MusicSimilarity::TRACK_ARTIST {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
 
-            old_duplicates = self.check_music_item(old_duplicates, &atomic_counter, |fe| &fe.track_artist, self.params.approximate_comparison);
+            old_duplicates = self.check_music_item(old_duplicates, &items_counter, |fe| &fe.track_artist, self.params.approximate_comparison);
         }
         if (self.params.music_similarity & MusicSimilarity::YEAR) == MusicSimilarity::YEAR {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
 
-            old_duplicates = self.check_music_item(old_duplicates, &atomic_counter, |fe| &fe.year, false);
+            old_duplicates = self.check_music_item(old_duplicates, &items_counter, |fe| &fe.year, false);
         }
         if (self.params.music_similarity & MusicSimilarity::LENGTH) == MusicSimilarity::LENGTH {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
 
-            old_duplicates = self.check_music_item(old_duplicates, &atomic_counter, |fe| &fe.length, false);
+            old_duplicates = self.check_music_item(old_duplicates, &items_counter, |fe| &fe.length, false);
         }
         if (self.params.music_similarity & MusicSimilarity::GENRE) == MusicSimilarity::GENRE {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
 
-            old_duplicates = self.check_music_item(old_duplicates, &atomic_counter, |fe| &fe.genre, false);
+            old_duplicates = self.check_music_item(old_duplicates, &items_counter, |fe| &fe.genre, false);
         }
         if (self.params.music_similarity & MusicSimilarity::BITRATE) == MusicSimilarity::BITRATE {
-            if check_if_stop_received(stop_receiver) {
+            if check_if_stop_received(stop_flag) {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             }
             let old_duplicates_len = old_duplicates.len();
             for vec_file_entry in old_duplicates {
@@ -495,7 +506,7 @@ impl SameMusic {
                     }
                 }
             }
-            atomic_counter.fetch_add(old_duplicates_len, Ordering::Relaxed);
+            items_counter.fetch_add(old_duplicates_len, Ordering::Relaxed);
             old_duplicates = new_duplicates;
         }
 
@@ -522,7 +533,7 @@ impl SameMusic {
         // Clear unused data
         self.music_entries.clear();
 
-        true
+        WorkContinueStatus::Continue
     }
 
     fn split_fingerprints_to_base_and_files_to_compare(&self, music_data: Vec<MusicEntry>) -> (Vec<MusicEntry>, Vec<MusicEntry>) {
@@ -579,8 +590,8 @@ impl SameMusic {
     #[fun_time(message = "compare_fingerprints", level = "debug")]
     fn compare_fingerprints(
         &mut self,
-        stop_receiver: Option<&Receiver<()>>,
-        atomic_counter: &Arc<AtomicUsize>,
+        stop_flag: Option<&Arc<AtomicBool>>,
+        items_counter: &Arc<AtomicUsize>,
         base_files: Vec<MusicEntry>,
         files_to_compare: &[MusicEntry],
     ) -> Option<Vec<Vec<MusicEntry>>> {
@@ -593,8 +604,8 @@ impl SameMusic {
         let mut duplicated_music_entries = Vec::new();
 
         for f_entry in base_files {
-            atomic_counter.fetch_add(1, Ordering::Relaxed);
-            if check_if_stop_received(stop_receiver) {
+            items_counter.fetch_add(1, Ordering::Relaxed);
+            if check_if_stop_received(stop_flag) {
                 return None;
             }
 
@@ -615,11 +626,7 @@ impl SameMusic {
                         Err(e) => return Some(Err(format!("Error while comparing fingerprints: {e}"))),
                     };
                     segments.retain(|s| s.duration(configuration) > minimum_segment_duration && s.score < maximum_difference);
-                    if segments.is_empty() {
-                        None
-                    } else {
-                        Some(Ok((e_string, e_entry)))
-                    }
+                    if segments.is_empty() { None } else { Some(Ok((e_string, e_entry))) }
                 })
                 .flatten()
                 .partition_map(|res| match res {
@@ -645,23 +652,23 @@ impl SameMusic {
     }
 
     #[fun_time(message = "check_for_duplicate_fingerprints", level = "debug")]
-    fn check_for_duplicate_fingerprints(&mut self, stop_receiver: Option<&Receiver<()>>, progress_sender: Option<&Sender<ProgressData>>) -> bool {
+    fn check_for_duplicate_fingerprints(&mut self, stop_flag: Option<&Arc<AtomicBool>>, progress_sender: Option<&Sender<ProgressData>>) -> WorkContinueStatus {
         if self.music_entries.is_empty() {
-            return true;
+            return WorkContinueStatus::Continue;
         }
 
         let grouped_files_to_check = self.split_fingerprints_to_check();
         let base_files_number = grouped_files_to_check.iter().map(|g| g.base_files.len()).sum::<usize>();
 
-        let (progress_thread_handle, progress_thread_run, atomic_counter, _check_was_stopped) =
-            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicComparingFingerprints, base_files_number, self.get_test_type());
+        let (progress_thread_handle, progress_thread_run, items_counter, _check_was_stopped, _size_counter) =
+            prepare_thread_handler_common(progress_sender, CurrentStage::SameMusicComparingFingerprints, base_files_number, self.get_test_type(), 0);
 
         let mut duplicated_music_entries = Vec::new();
         for group in grouped_files_to_check {
             let GroupedFilesToCheck { base_files, files_to_compare } = group;
-            let Some(temp_music_entries) = self.compare_fingerprints(stop_receiver, &atomic_counter, base_files, &files_to_compare) else {
+            let Some(temp_music_entries) = self.compare_fingerprints(stop_flag, &items_counter, base_files, &files_to_compare) else {
                 send_info_and_wait_for_ending_all_threads(&progress_thread_run, progress_thread_handle);
-                return false;
+                return WorkContinueStatus::Stop;
             };
             duplicated_music_entries.extend(temp_music_entries);
         }
@@ -689,14 +696,14 @@ impl SameMusic {
         // Clear unused data
         self.music_entries.clear();
 
-        true
+        WorkContinueStatus::Continue
     }
 
     #[fun_time(message = "check_music_item", level = "debug")]
     fn check_music_item(
         &self,
         old_duplicates: Vec<Vec<MusicEntry>>,
-        atomic_counter: &Arc<AtomicUsize>,
+        items_counter: &Arc<AtomicUsize>,
         get_item: fn(&MusicEntry) -> &str,
         approximate_comparison: bool,
     ) -> Vec<Vec<MusicEntry>> {
@@ -719,7 +726,7 @@ impl SameMusic {
                 }
             }
         }
-        atomic_counter.fetch_add(old_duplicates_len, Ordering::Relaxed);
+        items_counter.fetch_add(old_duplicates_len, Ordering::Relaxed);
 
         new_duplicates
     }
@@ -767,92 +774,93 @@ impl SameMusic {
 
 // TODO this should be taken from rusty-chromaprint repo, not reimplemented here
 fn calc_fingerprint_helper(path: impl AsRef<Path>, config: &Configuration) -> anyhow::Result<Vec<u32>> {
-    let path = path.as_ref();
-    let src = File::open(path).context("failed to open file")?;
-    let mss = MediaSourceStream::new(Box::new(src), Default::default());
+    let path = path.as_ref().to_path_buf();
+    panic::catch_unwind(|| {
+        let path = &path;
 
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(std::ffi::OsStr::to_str) {
-        hint.with_extension(ext);
-    }
+        let src = File::open(path).context("failed to open file")?;
+        let mss = MediaSourceStream::new(Box::new(src), Default::default());
 
-    let meta_opts: MetadataOptions = Default::default();
-    let fmt_opts: FormatOptions = Default::default();
-
-    let probed = symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts).context("unsupported format")?;
-
-    let mut format = probed.format;
-
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .context("no supported audio tracks")?;
-
-    let dec_opts: DecoderOptions = Default::default();
-
-    let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &dec_opts).context("unsupported codec")?;
-
-    let track_id = track.id;
-
-    let mut printer = Fingerprinter::new(config);
-    let sample_rate = track.codec_params.sample_rate.context("missing sample rate")?;
-    let channels = track.codec_params.channels.context("missing audio channels")?.count() as u32;
-    printer.start(sample_rate, channels).context("initializing fingerprinter")?;
-
-    let mut sample_buf = None;
-
-    loop {
-        let Ok(packet) = format.next_packet() else {
-            break;
-        };
-
-        if packet.track_id() != track_id {
-            continue;
+        let mut hint = Hint::new();
+        if let Some(ext) = path.extension().and_then(std::ffi::OsStr::to_str) {
+            hint.with_extension(ext);
         }
 
-        match decoder.decode(&packet) {
-            Ok(audio_buf) => {
-                if sample_buf.is_none() {
-                    let spec = *audio_buf.spec();
-                    let duration = audio_buf.capacity() as u64;
-                    sample_buf = Some(SampleBuffer::<i16>::new(duration, spec));
-                }
+        let meta_opts: MetadataOptions = Default::default();
+        let fmt_opts: FormatOptions = Default::default();
 
-                if let Some(buf) = &mut sample_buf {
-                    buf.copy_interleaved_ref(audio_buf);
-                    printer.consume(buf.samples());
-                }
+        let probed = symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts).context("unsupported format")?;
+
+        let mut format = probed.format;
+
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .context("no supported audio tracks")?;
+
+        let dec_opts: DecoderOptions = Default::default();
+
+        let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &dec_opts).context("unsupported codec")?;
+
+        let track_id = track.id;
+
+        let mut printer = Fingerprinter::new(config);
+        let sample_rate = track.codec_params.sample_rate.context("missing sample rate")?;
+        let channels = track.codec_params.channels.context("missing audio channels")?.count() as u32;
+        printer.start(sample_rate, channels).context("initializing fingerprinter")?;
+
+        let mut sample_buf = None;
+
+        loop {
+            let Ok(packet) = format.next_packet() else {
+                break;
+            };
+
+            if packet.track_id() != track_id {
+                continue;
             }
-            Err(symphonia::core::errors::Error::DecodeError(_)) => (),
-            Err(_) => break,
-        }
-    }
 
-    printer.finish();
-    Ok(printer.fingerprint().to_vec())
+            match decoder.decode(&packet) {
+                Ok(audio_buf) => {
+                    if sample_buf.is_none() {
+                        let spec = *audio_buf.spec();
+                        let duration = audio_buf.capacity() as u64;
+                        sample_buf = Some(SampleBuffer::<i16>::new(duration, spec));
+                    }
+
+                    if let Some(buf) = &mut sample_buf {
+                        buf.copy_interleaved_ref(audio_buf);
+                        printer.consume(buf.samples());
+                    }
+                }
+                Err(symphonia::core::errors::Error::DecodeError(_)) => (),
+                Err(_) => break,
+            }
+        }
+
+        printer.finish();
+        Ok(printer.fingerprint().to_vec())
+    })
+    .unwrap_or_else(|_| {
+        let message = create_crash_message("Symphonia", &path.to_string_lossy(), "https://github.com/pdeljanov/Symphonia");
+        error!("{message}");
+        Err(anyhow::anyhow!("{message}"))
+    })
 }
 
-fn read_single_file_tags(path: &str, music_entry: &mut MusicEntry) -> bool {
+fn read_single_file_tags(path: &str, mut music_entry: MusicEntry) -> Option<MusicEntry> {
     let Ok(mut file) = File::open(path) else {
-        return false;
+        return None;
     };
 
-    let Ok(possible_tagged_file) = panic::catch_unwind(move || {
-        match read_from(&mut file) {
-            Ok(t) => Some(t),
-            Err(_inspected) => {
-                // println!("Failed to open {}", path);
-                None
-            }
-        }
-    }) else {
+    let Ok(possible_tagged_file) = panic::catch_unwind(move || read_from(&mut file).ok()) else {
         let message = create_crash_message("Lofty", path, "https://github.com/image-rs/image/issues");
-        println!("{message}");
-        return false;
+        error!("{message}");
+        return None;
     };
 
-    let Some(tagged_file) = possible_tagged_file else { return true };
+    let Some(tagged_file) = possible_tagged_file else { return Some(music_entry) };
 
     let properties = tagged_file.properties();
 
@@ -865,10 +873,10 @@ fn read_single_file_tags(path: &str, music_entry: &mut MusicEntry) -> bool {
     let mut length = properties.duration().as_millis().to_string();
 
     if let Some(tag) = tagged_file.primary_tag() {
-        track_title = tag.get_string(&ItemKey::TrackTitle).unwrap_or("").to_string();
-        track_artist = tag.get_string(&ItemKey::TrackArtist).unwrap_or("").to_string();
-        year = tag.get_string(&ItemKey::Year).unwrap_or("").to_string();
-        genre = tag.get_string(&ItemKey::Genre).unwrap_or("").to_string();
+        track_title = tag.get_string(&ItemKey::TrackTitle).unwrap_or_default().to_string();
+        track_artist = tag.get_string(&ItemKey::TrackArtist).unwrap_or_default().to_string();
+        year = tag.get_string(&ItemKey::Year).unwrap_or_default().to_string();
+        genre = tag.get_string(&ItemKey::Genre).unwrap_or_default().to_string();
     }
 
     for tag in tagged_file.tags() {
@@ -917,7 +925,7 @@ fn read_single_file_tags(path: &str, music_entry: &mut MusicEntry) -> bool {
     music_entry.genre = genre;
     music_entry.bitrate = bitrate;
 
-    true
+    Some(music_entry)
 }
 
 impl DebugPrint for SameMusic {
@@ -1044,7 +1052,7 @@ impl CommonData for SameMusic {
 
 #[cfg(test)]
 mod tests {
-    use crate::same_music::get_simplified_name;
+    use crate::tools::same_music::get_simplified_name;
 
     #[test]
     fn test_strings() {

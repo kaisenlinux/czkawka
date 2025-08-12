@@ -2,19 +2,20 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-use crossbeam_channel::bounded;
-use czkawka_core::bad_extensions::BadExtensions;
-use czkawka_core::big_file::BigFile;
-use czkawka_core::broken_files::BrokenFiles;
-use czkawka_core::duplicate::DuplicateFinder;
-use czkawka_core::empty_files::EmptyFiles;
-use czkawka_core::empty_folder::EmptyFolder;
-use czkawka_core::invalid_symlinks::InvalidSymlinks;
-use czkawka_core::same_music::SameMusic;
-use czkawka_core::similar_images::SimilarImages;
-use czkawka_core::similar_videos::SimilarVideos;
-use czkawka_core::temporary::Temporary;
+use czkawka_core::tools::bad_extensions::BadExtensions;
+use czkawka_core::tools::big_file::BigFile;
+use czkawka_core::tools::broken_files::BrokenFiles;
+use czkawka_core::tools::duplicate::DuplicateFinder;
+use czkawka_core::tools::empty_files::EmptyFiles;
+use czkawka_core::tools::empty_folder::EmptyFolder;
+use czkawka_core::tools::invalid_symlinks::InvalidSymlinks;
+use czkawka_core::tools::same_music::SameMusic;
+use czkawka_core::tools::similar_images::SimilarImages;
+use czkawka_core::tools::similar_videos::SimilarVideos;
+use czkawka_core::tools::temporary::Temporary;
 use gdk4::gdk_pixbuf::Pixbuf;
 use gtk4::prelude::*;
 use gtk4::{Builder, FileChooserNative};
@@ -103,8 +104,7 @@ pub struct GuiData {
     pub scrolled_window_errors: gtk4::ScrolledWindow,
 
     // Used for sending stop signal to thread
-    pub stop_sender: crossbeam_channel::Sender<()>,
-    pub stop_receiver: crossbeam_channel::Receiver<()>,
+    pub stop_flag: Arc<AtomicBool>,
 }
 
 impl GuiData {
@@ -195,7 +195,7 @@ impl GuiData {
         scrolled_window_errors.show(); // Not sure why needed, but without it text view errors sometimes hide itself
 
         // Used for sending stop signal to thread
-        let (stop_sender, stop_receiver): (crossbeam_channel::Sender<()>, crossbeam_channel::Receiver<()>) = bounded(1);
+        let stop_flag = Arc::new(AtomicBool::new(false));
 
         Self {
             window_main,
@@ -228,8 +228,7 @@ impl GuiData {
             entry_info,
             text_view_errors,
             scrolled_window_errors,
-            stop_sender,
-            stop_receiver,
+            stop_flag,
         }
     }
 
